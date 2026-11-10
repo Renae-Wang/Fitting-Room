@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 580 700">
+<defs>
+ <pattern id="weave" width="4" height="4" patternUnits="userSpaceOnUse"><path d="M0 0L4 4M-1 3l2 2" stroke="#625b50" stroke-width=".65" opacity=".3"/></pattern>
+ <linearGradient id="linen" x1="0" x2="1" y1=".3" y2=".62"><stop stop-color="#989184"/><stop offset=".18" stop-color="#e0d9c9"/><stop offset=".38" stop-color="#f1e9d8"/><stop offset=".57" stop-color="#d8d0be"/><stop offset=".78" stop-color="#bdb4a3"/><stop offset="1" stop-color="#81786c"/></linearGradient>
+ <linearGradient id="brass"><stop stop-color="#302e2b"/><stop offset=".3" stop-color="#797267"/><stop offset=".57" stop-color="#c5b7a0"/><stop offset="1" stop-color="#383630"/></linearGradient>
+ <path id="torso" d="M267 125 Q272 143 246 155 Q220 164 191 169 Q176 175 164 194 Q173 211 161 241 Q162 266 178 300 Q200 340 195 368 Q189 397 164 448 Q147 488 155 531 Q164 567 294 572 Q410 567 415 532 Q418 491 400 446 Q378 396 370 364 Q368 339 387 301 Q403 266 408 243 Q399 221 411 195 Q397 174 383 171 Q353 159 334 155 Q313 143 315 123Z"/>
+</defs>
+<g stroke="#60172d" fill="none" opacity=".36" stroke-width="1"><path d="M68 69h19m-10-9v19m415-10h19m-9-9v19M68 631h19m-10-9v19m415-10h19m-9-9v19"/><path d="M289 64v559" stroke-dasharray="3 8"/></g>
+<g transform="rotate(3 289 350)"><path d="M278 561h21v89h-21z" fill="url(#brass)"/><ellipse cx="289" cy="648" rx="35" ry="5" fill="#716d61"/><ellipse cx="291" cy="121" rx="29" ry="10" fill="url(#brass)"/><path d="M278 116v-9q0-6 7-7v-6h12v6q8 2 8 7v9" fill="url(#brass)"/><ellipse cx="291" cy="93" rx="9" ry="5" fill="#565145"/>
+<use href="#torso" fill="url(#linen)" stroke="#82796b" stroke-width="1.5"/><use href="#torso" fill="url(#weave)"/>
+<g fill="none" stroke="#827865" stroke-width="1.7" opacity=".8"><path d="M289 129q-5 49-13 100t0 118q5 70-1 135l-2 87"/><path d="M225 166q-1 42-17 90t5 73q20 33 12 65t-28 76q-14 43-11 82M348 163q-6 51 5 83t-1 74q-26 48-10 88t23 83q8 43 6 71"/><path d="M164 241q18 8 24-15t-10-44m228 62q-22 9-23-17t12-46M196 363q82 23 173-1m-199 78q111 41 227 0m-240 86q122 39 256 3"/></g>
+<g fill="none" stroke="#60172d" stroke-width="2.2"><path d="M195 363q84 25 176-1"/><path d="M283 127q0 51-7 101t0 118" stroke-dasharray="2 5"/></g></g></svg>
