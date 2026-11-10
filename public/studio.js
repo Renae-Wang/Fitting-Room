@@ -95,13 +95,13 @@ const accepts='image/jpeg,image/png,image/webp,image/gif,image/avif,image/heic,i
 function dropZone(id,label){return '<label class="drag" id="'+id+'-drop">'+esc(label)+'<input type="file" id="'+id+'" multiple accept="'+accepts+'"></label>'}
 function bindDrop(id,fn){const el=$('#'+id+'-drop');on('#'+id,'change',e=>fn([...e.target.files]));el.ondragover=e=>{e.preventDefault();el.classList.add('over')};el.ondragleave=()=>el.classList.remove('over');el.ondrop=wrap(async e=>{e.preventDefault();el.classList.remove('over');await fn([...e.dataTransfer.files])})}
 function uploadStart(){
- sheet('Add to closet','<div class="vstack"><label class="field">These photos show<select id="batch-mode"><option value="separate">A different piece in each photo</option><option value="angles">Multiple angles of one piece</option></select></label>'+dropZone('new-files','Drop photos here, or choose files')+'<p class="hint">Review each piece before adding it to your closet. iPhone HEIC photos work. Photos are saved privately to your account.</p><p id="inline-error" class="error" role="alert"></p></div>');
+ sheet('Add to closet','<div class="vstack"><label class="field">These photos show<select id="batch-mode"><option value="separate">A different piece in each photo</option><option value="angles">Multiple angles of one piece</option></select></label>'+dropZone('new-files','Drop photos here, or choose files')+'<p id="intake-status" class="hint" role="status" aria-live="polite"></p><p class="hint">Review each piece before adding it to your closet. iPhone HEIC photos work. Photos are saved privately to your account.</p><p id="inline-error" class="error" role="alert"></p></div>');
  bindDrop('new-files',async files=>{if(!files.length)return;const mode=$('#batch-mode').value,seq=dialogSeq;$('#new-files').disabled=true;try{
-  const records=[];for(const file of files){const r=await photoRecord(file);if(!records.some(x=>x.id===r.id))records.push({...r,name:file.name.replace(/\.[^/.]+$/,'').replace(/[_-]/g,' ')})}
+  const records=[],status=$('#intake-status');for(const [n,file] of files.entries()){if(status)status.textContent='Preparing photo '+(n+1)+' of '+files.length+'…';const r=await photoRecord(file);if(!records.some(x=>x.id===r.id))records.push({...r,name:file.name.replace(/\.[^/.]+$/,'').replace(/[_-]/g,' ')})}if(status)status.textContent='';
   if(seq!==dialogSeq)return;
   const recordGroups=mode==='angles'?[records]:records.map(r=>[r]);const drafts=recordGroups.map(group=>({id:uid(),name:group[0].name,photos:group.map(r=>r.id),category:categories[0],status:'available'}));
   editItems(drafts,records,false);
- }finally{if($('#new-files'))$('#new-files').disabled=false}});
+ }finally{if($('#new-files'))$('#new-files').disabled=false;const st=$('#intake-status');if(st)st.textContent=''}});
 }
 function editItems(drafts,originals,editing,index=0){
  const d=drafts[index];const local=new Map(originals.map(o=>[o.id,o]));const viewUrls=[];
@@ -113,7 +113,7 @@ function editItems(drafts,originals,editing,index=0){
  const read=()=>Object.assign(d,Object.fromEntries(new FormData($('#edit-form'))));
  const again=()=>{free();editItems(drafts,originals,editing,index)};
  document.querySelectorAll('[data-remove-angle]').forEach(b=>b.onclick=wrap(()=>{read();d.photos=d.photos.filter(p=>p!==b.dataset.removeAngle);again()}));
- on('#more-angles','change',async e=>{const files=[...e.target.files];read();const add=[];for(const f of files)add.push(await photoRecord(f));if(seq!==dialogSeq)return;for(const r of add)if(!d.photos.includes(r.id)){d.photos=[...d.photos,r.id];originals.push(r)}again()});
+ on('#more-angles','change',async e=>{const files=[...e.target.files];read();const add=[];for(const [n,f] of files.entries()){notify('Preparing photo '+(n+1)+' of '+files.length+'…');add.push(await photoRecord(f))}if(seq!==dialogSeq)return;for(const r of add)if(!d.photos.includes(r.id)){d.photos=[...d.photos,r.id];originals.push(r)}again()});
  on('#back-closet','click',()=>{free();closet()});
  on('#delete-item','click',async()=>{if(!confirm('Delete this item and its private photographs?'))return;await remove('items',d.id);await collectAssets();await refresh();free();closet();render()});
  on('#tag-photo','click',async e=>{const btn=e.currentTarget;btn.disabled=true;btn.textContent='Analyzing photo…';try{
@@ -136,7 +136,7 @@ function profile(){
  sheet('Appearance references','<div class="vstack"><p class="sheet-copy">A full-body front photo and a front-facing headshot anchor the outfit rendering. Other angles are optional. Photos are saved privately to your account and sent to OpenAI only when you render a look.</p><div>'+slots.map(([id,label,required])=>{const r=refs.find(x=>x.id===id);return '<div class="ref-row">'+(r?'<img alt="'+esc(label)+'" src="'+esc(source(r.photo))+'">':'<span class="ref-sample" aria-hidden="true">+</span>')+'<div><strong>'+esc(label)+'</strong><small>'+(required?'Required':'Optional')+'</small></div><div class="actions"><button data-pick="'+id+'">'+(r?'Replace':'Upload')+'</button>'+(r?'<button data-delref="'+id+'" aria-label="Delete '+esc(label)+'">×</button>':'')+'</div></div>'}).join('')+'</div><button id="extra">Add other references</button><button id="sign-out" class="text-btn">Sign out</button><input hidden id="ref-picker" type="file" accept="'+accepts+'"><p class="error" id="inline-error" role="alert"></p></div>');
  const picker=$('#ref-picker');let selected;function pick(id){selected=id;picker.multiple=!id;picker.value='';picker.click()}
  document.querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>pick(b.dataset.pick));on('#extra','click',()=>pick(''));
- on('#ref-picker','change',async e=>{const changes=[];for(const f of e.target.files){const record=await photoRecord(f);changes.push({store:'assets',record},{store:'refs',record:{id:selected||uid(),photo:record.id,label:f.name}})}if(!changes.length)return;await batch(changes);await collectAssets();await refresh();profile();render()});
+ on('#ref-picker','change',async e=>{const changes=[],files=[...e.target.files];for(const [n,f] of files.entries()){notify('Preparing photo '+(n+1)+' of '+files.length+'…');const record=await photoRecord(f);changes.push({store:'assets',record},{store:'refs',record:{id:selected||uid(),photo:record.id,label:f.name}})}if(!changes.length)return;await batch(changes);await collectAssets();await refresh();profile();render()});
  on('#sign-out','click',async()=>{await signOut();location.reload()});
  document.querySelectorAll('[data-delref]').forEach(b=>b.onclick=wrap(async()=>{await remove('refs',b.dataset.delref);await collectAssets();await refresh();profile();render()}));
 }
