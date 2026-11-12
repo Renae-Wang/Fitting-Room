@@ -54,21 +54,21 @@ async function localRequest(path, body, signal) {
   if (!resp.ok) throw new Error(data.error || 'Request failed.');
   return data;
 }
-export function mountMirror(container, {getContext = async () => ({}), onSassChange, request = localRequest} = {}) {
+export function mountMirror(container, {getContext = async () => ({}), onSassChange, request = localRequest, autoFrames = true, onAutoFramesChange} = {}) {
   container.innerHTML = `<section class="mr" data-state="idle" aria-labelledby="mr-title">
     <header class="mr-heading"><div><h1 id="mr-title">Mirror<span>.</span></h1><p>Your fitting room, with commentary.</p></div><button type="button" data-action="creator" aria-pressed="false">Creator mode</button></header>
     <div class="mr-grid">
       <div class="mr-stage">
         <div class="mr-stage-top"><span class="mr-state" role="status"><i></i><span>Idle</span></span><span class="mr-mic-indicator" hidden>Mic on</span><button type="button" class="mr-exit" data-action="creator">Exit creator mode</button></div>
         ${face}
-        <div class="mr-preview" hidden><video autoplay muted playsinline></video><span>Camera on</span></div>
+        <div class="mr-preview" hidden><video autoplay muted playsinline></video><span class="mr-preview-label">Camera on</span></div>
         <div class="mr-caption" hidden></div>
       </div>
       <div class="mr-controls">
         <div class="mr-actions"><button type="button" class="mr-primary" data-action="voice">Start talking</button><button type="button" data-action="mute" hidden>Mute mic</button><button type="button" data-action="play" hidden>Enable sound</button></div>
         <p class="mr-voice-note">Starting a session shares mic audio and styling context with OpenAI.</p>
-        <div class="mr-line"><div><strong>Camera</strong><p>Camera preview stays local until you tap React to my outfit.</p></div><button type="button" data-action="camera">Turn on camera</button></div>
-        <div class="mr-actions"><button type="button" data-action="switch" hidden>Switch camera</button><button type="button" data-action="react" disabled>React to my outfit</button></div><p class="mr-disclosure">Each tap sends one still image to OpenAI.</p>
+        <div class="mr-line"><div><strong>Camera</strong><p class="mr-camera-note"></p></div><button type="button" data-action="camera">Turn on camera</button></div>
+        <div class="mr-actions"><button type="button" data-action="switch" hidden>Switch camera</button><button type="button" data-action="react" disabled>React to my outfit</button></div><label class="mr-check mr-auto"><input type="checkbox" data-action="auto-frame"> Share a frame each time I start talking</label><p class="mr-disclosure"></p>
         <div class="mr-settings"><label for="mr-sass">Sass <output for="mr-sass"></output></label><input id="mr-sass" type="range" min="0" max="4" step="1" value="3"><label class="mr-check"><input type="checkbox" data-action="captions" checked> Stylist captions</label></div>
         <p class="mr-feedback" role="status" hidden></p>
       </div>
@@ -156,12 +156,38 @@ export function mountMirror(container, {getContext = async () => ({}), onSassCha
     tick();
   }
   function send(s, event) { s.dc.send(JSON.stringify(event)); }
+  // One still frame per turn: sent as you start talking, so the reply sees what you're wearing now.
+  // At most one every 4 seconds, so short pauses and background noise don't send extra images.
+  let labelTimer;
+  function autoShare(s) {
+    if (!autoFrames || !camera || video.readyState < 2 || s.dc?.readyState !== 'open') return;
+    const now = Date.now();
+    if (now - (s.lastFrame || 0) < 4000) return;
+    try {
+      const image = captureFrame(video, Math.min(s.pc.sctp?.maxMessageSize || 64000, 180000));
+      send(s, {type:'conversation.item.create', item:{type:'message', role:'user', content:[
+        {type:'input_image', image_url:image},
+        {type:'input_text', text:'Camera snapshot taken automatically as I started talking. It shows what I am wearing right now. Use it when it is relevant to what I say next.'}
+      ]}});
+      s.lastFrame = now; s.frames = (s.frames || 0) + 1;
+      const label = root.querySelector('.mr-preview-label');
+      if (label) { label.textContent = 'Frame sent'; clearTimeout(labelTimer); labelTimer = setTimeout(() => { label.textContent = 'Camera on'; }, 1500); }
+    } catch {}
+  }
+  function renderNotes() {
+    root.querySelector('.mr-camera-note').textContent = autoFrames
+      ? 'The preview stays on this device. A still frame goes to the stylist each time you start talking.'
+      : 'Camera preview stays local until you tap React to my outfit.';
+    root.querySelector('.mr-disclosure').textContent = autoFrames
+      ? 'One still image per turn, plus one per tap. The camera never streams video.'
+      : 'Each tap sends one still image to OpenAI.';
+  }
   function onEvent(s, e) {
     if (!alive(s)) return;
     let m; try { m = JSON.parse(e.data); } catch { return; }
     switch (m.type) {
       case 'input_audio_buffer.speech_started':
-        s.playing = false; setState('listening'); break;
+        s.playing = false; setState('listening'); autoShare(s); break;
       case 'input_audio_buffer.speech_stopped':
         setState('thinking'); break;
       case 'response.created':
@@ -265,6 +291,8 @@ export function mountMirror(container, {getContext = async () => ({}), onSassCha
   video.onloadeddata = renderControls;
   el('mute').onclick = () => { const track = voice?.mic?.getAudioTracks()[0]; if(track) { track.enabled = !track.enabled; renderControls(); } };
   el('captions').onchange = showCaption; el('react').onclick = react;
+  el('auto-frame').checked = autoFrames; renderNotes();
+  el('auto-frame').onchange = () => { autoFrames = Boolean(el('auto-frame').checked); renderNotes(); try { onAutoFramesChange?.(autoFrames); } catch {} };
   function setCreator(on) {
     root.classList.toggle('mr-creator',on);
     document.body.classList.toggle('mr-active-creator',on);

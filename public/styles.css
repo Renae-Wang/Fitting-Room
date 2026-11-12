@@ -299,3 +299,47 @@ dialog.confirm{width:min(440px,calc(100% - 32px));padding:22px 22px 20px}
 .bulk-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .bulk-move{flex:1 1 190px;min-width:0}
 @media(max-width:650px){.bulk-bar{margin:0 -16px -16px;padding:10px 16px 14px}.bulk-actions button{flex:1 1 auto}}
+
+/* ---- Closet sections, upload progress and review ---- */
+.tabs{display:flex;gap:0;border-bottom:1.5px solid var(--oxblood)}
+.tabs [role=tab]{min-height:44px;border:0;border-radius:0;padding:10px 16px;margin-bottom:-1.5px;border-bottom:3px solid transparent;color:var(--muted);letter-spacing:.16em}
+.tabs [role=tab]:hover:not(:disabled){background:var(--tint);color:var(--oxblood)}
+.tabs [role=tab][aria-selected=true]{color:var(--oxblood);border-bottom-color:var(--oxblood)}
+.tabs .count{display:inline-block;min-width:22px;margin-left:6px;padding:1px 6px;border-radius:999px;background:var(--tint);color:var(--oxblood);font-size:11px;letter-spacing:0}
+.tabs [aria-selected=true] .count{background:var(--oxblood);color:var(--blush)}
+#intake-slot:empty{display:none}
+.intake-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 14px;background:var(--paper);border:1.5px solid var(--petrol)}
+.intake-banner>div{display:grid;gap:3px;min-width:0;flex:1 1 220px}
+.intake-banner strong{font:800 13px/1.2 var(--ui);font-stretch:70%;text-transform:uppercase;letter-spacing:.12em;color:var(--petrol)}
+.intake-banner progress{flex:1 1 160px;height:10px;accent-color:var(--petrol)}
+.intake-banner.failed{border:1.5px dashed var(--oxblood)}
+.intake-banner.failed strong{color:var(--oxblood)}
+.intake-banner.done{border-style:dashed}
+.tile .tile-pill{position:absolute;top:8px;right:8px;z-index:1;margin:0}
+.pill.new{background:var(--petrol);color:var(--blush)}
+.tile.pickable .tile-pill{right:8px}
+fieldset.choice{border:0;margin:0;padding:0;display:flex;gap:6px 18px;flex-wrap:wrap;align-items:center}
+fieldset.choice legend{margin-bottom:6px;padding:0}
+fieldset.choice label{display:inline-flex;align-items:center;gap:7px;min-height:36px;font-size:14px}
+fieldset.choice input{accent-color:var(--oxblood);width:16px;height:16px;margin:0}
+.piece-wait{justify-items:start}
+.piece-wait .loading{width:22px;height:22px;color:var(--petrol)}
+.piece-wait strong{font:700 22px/1.15 var(--display);color:var(--oxblood)}
+.piece-wait .form-foot{width:100%}
+.intake-pill{position:fixed;left:16px;bottom:16px;z-index:9;display:inline-flex;align-items:center;gap:9px;min-height:40px;padding:8px 14px;background:var(--petrol);border-color:var(--petrol);color:var(--blush);box-shadow:3px 3px 0 var(--oxblood);font-size:12px}
+.intake-pill:hover:not(:disabled){background:#0d3a39}
+.intake-pill .loading{width:12px;height:12px}
+.intake-pill.failed{background:var(--paper);color:var(--oxblood);border:1.5px dashed var(--oxblood)}
+.intake-pill.failed:hover:not(:disabled){background:var(--tint)}
+@media(max-width:650px){.tabs [role=tab]{flex:1 1 0;padding:10px 8px;letter-spacing:.1em}.intake-pill{left:12px;bottom:12px}}
+@media(max-width:900px){.intake-pill:not([hidden])~#notice{bottom:68px}}
+
+/* ---- Read aloud ---- */
+.say{display:grid;gap:10px}
+.say p{line-height:1.65}
+.listen{justify-self:start;display:inline-flex;align-items:center;gap:8px;min-height:38px;padding:7px 13px;font-size:12px;letter-spacing:.14em}
+.listen .icon{width:16px;height:16px}
+.say.is-reading .listen{background:var(--butter);border-color:var(--butter)}
+.say [data-w]{border-radius:2px;transition:background-color 80ms linear,color 80ms linear}
+.say [data-w].spoken{background:var(--butter);color:var(--oxblood);box-shadow:0 0 0 2px var(--butter)}
+@media(prefers-reduced-motion:reduce){.say [data-w]{transition:none}}

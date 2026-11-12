@@ -66,3 +66,5 @@
 .mr-creator .mr-disclosure{flex-basis:100%;text-align:center;margin:0}
 @media(max-width:700px){.mr{padding:22px 15px}.mr-grid{display:block}.mr-stage{aspect-ratio:1.2}.mr-controls{margin-top:18px}.mr-heading{margin-bottom:16px}.mr-heading h1{font-size:52px}.mr-creator .mr-face{height:min(70dvh,104vw)}.mr-creator .mr-controls{margin:0}.mr-creator .mr-grid{display:flex}}
 @media(prefers-reduced-motion:reduce){.mr *{animation:none!important;transition:none!important}}
+.mr-auto{margin-top:6px}
+.mr-creator .mr-auto{display:none}

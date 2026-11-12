@@ -1,4 +1,6 @@
-import {openStore,all,batch,put,remove,photoRecord,referenceJPEG,collectAssets,assetBlob} from './store.js';
+import {openStore,all,batch,put,remove,photoRecord,referenceJPEG,collectAssets,assetBlob,uploadPhoto} from './store.js';
+import {planPieces,createIntake} from './intake.js';
+import {tokenize,alignWords,wordAt} from './readaloud.js';
 import {client,configured,keyProblem,currentSession,sendLink,signOut,api} from './supabase.js';
 import {AREAS,SPOT_LABELS,lookAreas,spotsFor,cropStyle,containRect} from './details.js';
 
@@ -16,22 +18,23 @@ const uid=()=>crypto.randomUUID();
 const idMap=rows=>new Map(rows.map(r=>[r.id,r]));
 let items=[],refs=[],looks=[],assets=new Map(),settings={},state={enabled:false},busy='',failure='',active='',ready=false,cleanupMirror,navSeq=0,noticeTimer,dialogSeq=0;
 // busy: '' | 'select' | 'render'. held: the image kept visible while a new one renders.
-let held=null,sameRun=false,renderError=null,detailsOn=false,guard=null,spotObserver;const locating=new Set(),unmapped=new Set();
+let held=null,sameRun=false,renderError=null,detailsOn=false,guard=null,spotObserver,intake=null,intakeTimer=null,pillTimer=null;const locating=new Set(),unmapped=new Set();
 const pref=()=>({...defaults,...settings});
 const current=()=>looks.find(l=>l.id===active);
-const available=()=>items.filter(i=>i.status==='available'&&i.category!==categories.at(-1)&&i.photos?.length);
+// Unreviewed pieces never reach the stylist until they're added to the closet.
+const available=()=>items.filter(i=>!i.intake&&i.status==='available'&&i.category!==categories.at(-1)&&i.photos?.length);
 const coverage=()=>{const cats=new Set(available().map(i=>i.category));return {shoes:cats.has('Shoes'),base:cats.has(categories[2])||(cats.has('Tops')&&cats.has('Bottoms')),body:refs.some(r=>r.id==='body-front'),face:refs.some(r=>r.id==='head-front')}};
 function source(id){return assets.get(id)?.url||''}
 function notify(s){$('#notice').textContent=s;clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>$('#notice').textContent='',5500)}
 async function refresh(){const [i,r,l,s,a]=await Promise.all(['items','refs','looks','settings','assets'].map(all));items=i;refs=r;looks=l.sort((x,y)=>y.created-x.created);settings=Object.fromEntries(s.map(v=>[v.id,v.value]));assets=idMap(a)}
 async function setting(id,value){settings[id]=value;await put('settings',{id,value})}
 const publicItem=({photos,...item})=>item;
-function context(){const p=pref();return {wardrobe:items.map(publicItem),outfit:current()?lookFields(current()):null,preferences:{style:p.style,creativity:p.creativity},occasion:p.occasion,context:p.context,sass:p.sass,feedback:historyFields()}}
+function context(){const p=pref();return {wardrobe:items.filter(i=>!i.intake).map(publicItem),outfit:current()?lookFields(current()):null,preferences:{style:p.style,creativity:p.creativity},occasion:p.occasion,context:p.context,sass:p.sass,feedback:historyFields()}}
 function lookFields(l){return {id:l.id,title:l.title,itemIds:l.itemIds,styling:l.styling,makeup:l.makeup,reasoning:l.reasoning,occasion:l.occasion}}
 function historyFields(){return looks.slice(0,25).map(l=>({title:l.title,itemIds:l.itemIds,rating:l.rating,feedback:l.feedback,occasion:l.occasion}))}
 const request=(path,body)=>api(path,body);
 async function status(){try{state=await request('status')}catch{state={enabled:false}}}
-function sheet(title,markup){guard=null;dialogSeq++;$('#sheet-title').textContent=title;$('#sheet-body').innerHTML=markup;const d=$('#sheet');if(!d.open)d.showModal();d.scrollTop=0}
+function sheet(title,markup){guard=null;redrawCloset=null;reviewWake=null;dialogSeq++;$('#sheet-title').textContent=title;$('#sheet-body').innerHTML=markup;const d=$('#sheet');if(!d.open)d.showModal();d.scrollTop=0}
 function close(){if($('#sheet').open)$('#sheet').close()}
 // Every way out of a sheet goes through requestClose, so unsaved upload work is never lost by accident.
 function requestClose(proceed=close){if(guard?.dirty()){askDiscard(guard.summary?.()||'',()=>{const g=guard;guard=null;g?.discard?.();proceed()});return}guard=null;proceed()}
@@ -41,7 +44,7 @@ function askConfirm({title,body,keep,act},onAct){
  k.onclick=()=>d.close();a.onclick=()=>{d.close();onAct()};
  d.showModal();k.focus();
 }
-const askDiscard=(summary,onDiscard)=>askConfirm({title:'Discard unsaved work?',body:summary+' Pieces already in your closet stay as they are.',keep:'Keep reviewing',act:'Discard unsaved work'},onDiscard);
+const askDiscard=(summary,onDiscard)=>askConfirm({title:'Discard unsaved work?',body:summary,keep:'Keep reviewing',act:'Discard unsaved work'},onDiscard);
 const plural=(n,one,many)=>n+' '+(n===1?one:many);
 // Deleting pieces removes them and any photos nothing else uses. Looks that used them keep a placeholder.
 function askDelete(ids,after){
@@ -61,7 +64,7 @@ confirmEl.addEventListener('click',e=>{if(e.target===confirmEl&&outside(confirmE
 // Closing a sheet re-renders Studio; put focus back on the same control so keyboard users keep their place.
 const focusKey=el=>!el||el===document.body?null:el.id?'#'+el.id:el.dataset?.spot?'.spot[data-spot="'+el.dataset.spot+'"]':el.dataset?.area?'#detail-list [data-area="'+el.dataset.area+'"]':null;
 sheetEl.addEventListener('close',()=>{guard=null;dialogSeq++;if(!ready||location.hash==='#mirror')return;const key=focusKey(document.activeElement);render();if(key)$(key)?.focus()});
-addEventListener('beforeunload',e=>{if(sheetEl.open&&guard?.dirty()){e.preventDefault();e.returnValue=''}});
+addEventListener('beforeunload',e=>{if((sheetEl.open&&guard?.dirty())||intake?.busy()){e.preventDefault();e.returnValue=''}});
 function wrap(fn){return async e=>{try{await fn(e)}catch(err){notify(err.message||'Something went wrong. Retry the action.');const live=$('#inline-error');if(live)live.textContent=err.message}}}
 function on(sel,event,fn){const el=$(sel);if(el)el.addEventListener(event,wrap(fn))}
 const setupLine=(ok,action,text)=>'<li class="'+(ok?'ok':'')+'"><button type="button" data-setup="'+action+'">'+esc(text)+'</button></li>';
@@ -98,9 +101,61 @@ function viewer(l){
 function details(l){
  const pieces=l.itemIds.map(id=>{const it=items.find(i=>i.id===id);return it?'<div class="item-chip"><img src="'+esc(source(it.photos[0]))+'" alt=""><span>'+esc(it.name)+'</span></div>':'<span class="hint">Deleted closet item</span>'}).join('');
  return '<section class="look-card"><span class="micro">Look notes</span><h2>'+esc(l.title)+'</h2><div class="actions"><button type="button" id="save-look" '+(l.saved?'disabled':'')+'>'+(l.saved?'Saved to lookbook':'Save look')+'</button><button type="button" id="rate-look">Rate after wearing</button>'+(l.image&&!busy&&renderError?.id!==l.id?'<button type="button" class="text-btn" id="regenerate" '+(state.enabled?'':'disabled')+'>Regenerate image</button>':'')+'</div>'
-  +'<details class="settings" data-keep="why"><summary>Why this look</summary><div><p>'+esc(l.reasoning)+'</p></div></details>'
+  +'<details class="settings" data-keep="why"><summary>Why this look</summary><div>'+sayMarkup(l,'why')+'</div></details>'
   +'<details class="settings" data-keep="pieces"><summary>Pieces · '+l.itemIds.length+'</summary><div class="item-strip">'+pieces+'</div></details>'
-  +'<details class="settings" data-keep="steps"><summary>Styling &amp; makeup</summary><div><p>'+esc(l.styling)+'</p><p>'+esc(l.makeup)+'</p></div></details></section>';
+  +'<details class="settings" data-keep="steps"><summary>Styling &amp; makeup</summary><div>'+sayMarkup(l,'steps')+'</div></details></section>';
+}
+// ---------- Read aloud: look notes in a natural voice, highlighting each word as it's spoken ----------
+let reader=null;
+const sayParts=(l,key)=>(key==='why'?[l.reasoning]:[l.styling,l.makeup]).map(p=>String(p||'').trim()).filter(Boolean);
+const sayText=(l,key)=>sayParts(l,key).join('\n\n');
+async function textId(text){const d=await crypto.subtle.digest('SHA-256',new TextEncoder().encode('marin|'+text));return Array.from(new Uint8Array(d),b=>b.toString(16).padStart(2,'0')).join('')}
+function sayMarkup(l,key){
+ let n=0;const parts=sayParts(l,key);if(!parts.length)return '';
+ const mine=reader&&reader.lookId===l.id&&reader.key===key?reader.status:'idle';
+ const cached=l.voice?.[key]&&assets.has(l.voice[key].asset);
+ const label={idle:'Listen',loading:'Preparing audio…',playing:'Pause',paused:'Resume',ended:'Listen again'}[mine];
+ const paras=parts.map(p=>'<p>'+tokenize(p).map(t=>t.word?'<span data-w="'+(n++)+'">'+esc(t.t)+'</span>':esc(t.t)).join('')+'</p>').join('');
+ return '<div class="say'+(mine==='playing'||mine==='paused'?' is-reading':'')+'" data-say="'+key+'"><button type="button" class="listen" data-listen="'+key+'" aria-label="'+esc(label)+': '+(key==='why'?'why this look':'styling and makeup')+'" '+(mine==='loading'||(!cached&&!state.enabled&&mine==='idle')?'disabled':'')+'><svg class="icon" viewBox="0 0 22 22" aria-hidden="true"><path d="'+(mine==='playing'?'M7 5v12M15 5v12':mine==='loading'?'M4 11h2m4 0h2m4 0h2':'M4 8h3l5-4v14l-5-4H4z M15 8q2 3 0 6')+'"/></svg>'+esc(label)+'</button>'+paras+'</div>';
+}
+function sayButtons(){document.querySelectorAll('#look-col [data-say]').forEach(box=>{const l=current();if(!l)return;const key=box.dataset.say,fresh=document.createElement('div');fresh.innerHTML=sayMarkup(l,key);const btn=fresh.querySelector('.listen');box.querySelector('.listen')?.replaceWith(btn);btn.onclick=wrap(()=>listen(key));box.classList.toggle('is-reading',reader?.key===key&&(reader.status==='playing'||reader.status==='paused'))})}
+function stopReader(){if(!reader)return;cancelAnimationFrame(reader.raf);reader.audio?.pause();if(reader.temp)URL.revokeObjectURL(reader.temp);document.querySelectorAll('#look-col [data-w].spoken').forEach(s=>s.classList.remove('spoken'));reader=null;sayButtons()}
+// Paints the highlight on the word being spoken. The loop runs only while playing, and only one at a time.
+function paint(){
+ const r=reader;if(!r||!r.audio||!r.times)return;
+ const i=r.status==='playing'?wordAt(r.times,r.audio.currentTime):r.last;
+ if(i!==r.shown){document.querySelectorAll('#look-col [data-say="'+r.key+'"] [data-w].spoken').forEach(s=>s.classList.remove('spoken'));if(i>=0)document.querySelector('#look-col [data-say="'+r.key+'"] [data-w="'+i+'"]')?.classList.add('spoken');r.shown=i}
+ r.last=i;
+}
+function follow(){const r=reader;if(!r)return;cancelAnimationFrame(r.raf);const step=()=>{if(reader!==r)return;paint();if(r.status==='playing')r.raf=requestAnimationFrame(step)};step()}
+async function listen(key){
+ const l=current();if(!l)return;
+ if(reader&&reader.lookId===l.id&&reader.key===key&&reader.audio){
+  if(reader.status==='playing'){reader.audio.pause();reader.status='paused';sayButtons();return}
+  if(reader.status==='ended')reader.audio.currentTime=0;
+  reader.status='playing';await reader.audio.play();follow();sayButtons();return;
+ }
+ stopReader();
+ const text=sayText(l,key),words=tokenize(sayParts(l,key).join(' ')).filter(t=>t.word).map(t=>t.t);
+ const r=reader={lookId:l.id,key,status:'loading',shown:-1,last:-1};sayButtons();
+ try{
+  const id='voice-'+(await textId(text));let url,timed;
+  const saved=l.voice?.[key];
+  if(saved?.asset===id&&assets.has(id)){url=source(id);timed=saved.words}
+  else{
+   const res=await request('speak',{text});
+   const bytes=Uint8Array.from(atob(String(res.audio||'').split(',')[1]||''),c=>c.charCodeAt(0));if(!bytes.length)throw Error('The voice service returned no audio. Try again.');
+   const blob=new Blob([bytes],{type:'audio/mpeg'});r.temp=url=URL.createObjectURL(blob);timed=res.words;
+   try{await uploadPhoto({id,blob});await refresh();const latest=looks.find(x=>x.id===l.id);if(latest)await put('looks',{...latest,voice:{...(latest.voice||{}),[key]:{asset:id,words:timed||null}}});await collectAssets();await refresh()}catch{}
+  }
+  if(reader!==r)return;
+  const audio=r.audio=new Audio(url);audio.preload='auto';
+  await new Promise((resolve,reject)=>{audio.onloadedmetadata=resolve;audio.onerror=()=>reject(Error('This audio could not be played. Try again.'))});
+  if(reader!==r){audio.pause();return}
+  r.times=alignWords(words,timed,audio.duration);
+  audio.onended=()=>{if(reader!==r)return;r.status='ended';cancelAnimationFrame(r.raf);r.last=-1;follow();sayButtons()};
+  r.status='playing';await audio.play();follow();sayButtons();
+ }catch(e){if(reader===r){reader=null;sayButtons()}throw e}
 }
 const lookColumn=l=>viewer(l)+(l?details(l):'');
 function keepOpen(root){const open=new Set([...root.querySelectorAll('details[open][data-keep]')].map(d=>d.dataset.keep));return ()=>root.querySelectorAll('details[data-keep]').forEach(d=>{if(open.has(d.dataset.keep))d.open=true})}
@@ -116,6 +171,8 @@ function wireLook(){
  document.querySelectorAll('#look-col [data-area]').forEach(b=>b.onclick=wrap(()=>openArea(b.dataset.area,b.dataset.spot)));
  on('#retry-image','click',()=>runLook(true));on('#render-look','click',()=>runLook(true));on('#regenerate','click',()=>runLook(true));
  on('#save-look','click',async()=>{const l=current();await put('looks',{...l,saved:true});await refresh();refreshLook();notify('Saved to your lookbook.')});on('#rate-look','click',rate);
+ document.querySelectorAll('#look-col [data-listen]').forEach(b=>b.onclick=wrap(()=>listen(b.dataset.listen)));
+ if(reader){if(reader.lookId!==current()?.id)stopReader();else{reader.shown=-2;paint()}}
  layoutSpots();
 }
 // Locates face, neckline and hands on this device. Free: never calls a paid service.
@@ -161,7 +218,7 @@ async function visualize(l){
 }
 function revealViewer(){const v=$('#viewer');if(!v)return;const r=v.getBoundingClientRect();if(r.top<0||r.top>innerHeight*0.5)v.scrollIntoView({block:'start',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'})}
 async function runLook(imageOnly){
- if(busy)return;failure='';renderError=null;detailsOn=false;held=current()?.image||null;sameRun=imageOnly;
+ if(busy)return;stopReader();failure='';renderError=null;detailsOn=false;held=current()?.image||null;sameRun=imageOnly;
  busy=imageOnly?'render':'select';render();revealViewer();live(imageOnly?'Rendering your look…':'Selecting pieces…');
  let mapped=null;
  try{
@@ -183,84 +240,142 @@ function lookbook(){
  const rows=looks.map(l=>'<div class="history-row">'+(l.image?'<img alt="" src="'+esc(l.image)+'">':'<span class="history-blank"></span>')+'<div class="history-title"><strong>'+esc(l.title)+'</strong><small>'+esc(l.occasion)+' · '+(l.saved?'Saved':'Generated')+(l.rating?' · '+l.rating+'/5':'')+'</small></div><button data-view="'+l.id+'">View</button><button data-drop="'+l.id+'" aria-label="Remove '+esc(l.title)+'">×</button></div>').join('');
  sheet('Lookbook','<div class="vstack">'+(rows||'<div class="empty-note">Your generated looks and wear ratings will appear here.</div>')+'</div>');
  document.querySelectorAll('[data-view]').forEach(b=>b.onclick=wrap(async()=>{active=b.dataset.view;detailsOn=false;renderError=null;await setting('activeLook',active);close();render()}));
- document.querySelectorAll('[data-drop]').forEach(b=>b.onclick=()=>{const id=b.dataset.drop;askConfirm({title:'Delete this look?',body:'Its preview, notes and rating are removed. Your closet pieces stay. This can’t be undone.',keep:'Keep look',act:'Delete look'},wrap(async()=>{await remove('looks',id);await refresh();if(active===id){active=looks[0]?.id||'';await setting('activeLook',active)}lookbook();render()}))});
+ document.querySelectorAll('[data-drop]').forEach(b=>b.onclick=()=>{const id=b.dataset.drop;askConfirm({title:'Delete this look?',body:'Its preview, notes and rating are removed. Your closet pieces stay. This can’t be undone.',keep:'Keep look',act:'Delete look'},wrap(async()=>{if(reader?.lookId===id)stopReader();await remove('looks',id);await collectAssets();await refresh();if(active===id){active=looks[0]?.id||'';await setting('activeLook',active)}lookbook();render()}))});
 }
 function rate(){const l=current();sheet('After wearing','<form id="feedback" class="vstack"><label class="field">Rating<select name="rating" required><option value="">Choose a rating</option>'+[1,2,3,4,5].map(v=>'<option value="'+v+'" '+(v===l.rating?'selected':'')+'>'+v+' / 5</option>').join('')+'</select></label><label class="field">What worked or missed?<textarea name="feedback" maxlength="1000">'+esc(l.feedback)+'</textarea></label><button class="primary">Save feedback</button></form>');on('#feedback','submit',async e=>{e.preventDefault();const f=new FormData(e.target);const latest=(await all('looks')).find(x=>x.id===l.id);if(!latest)throw Error('This look has been removed.');await put('looks',{...latest,rating:Number(f.get('rating')),feedback:f.get('feedback')});await refresh();close();notify('Feedback saved for future styling requests.')})}
-let picking=false;const picked=new Set();
-function closet(){
- for(const id of [...picked])if(!items.some(i=>i.id===id))picked.delete(id);
+// ---------- Closet: reviewed pieces and an Unreviewed section ----------
+let picking=false,closetTab='closet',redrawCloset=null,reviewWake=null,reviewLater=false;const picked=new Set();
+const inboxItems=()=>items.filter(i=>i.intake).sort((a,b)=>(a.created||0)-(b.created||0));
+const closetPieces=()=>items.filter(i=>!i.intake);
+function intakeBanner(){
+ const p=intake?.progress();if(!p||(!p.total&&!p.failed))return '';
+ if(p.busy)return '<div class="intake-banner" role="status"><div><strong>Uploading · '+p.finished+' of '+p.total+' done</strong><span class="hint">Each piece is saved to Unreviewed as soon as its photos are up.'+(p.failed?' '+plural(p.failed,'piece','pieces')+' failed so far.':'')+'</span></div><progress max="'+p.total+'" value="'+p.finished+'" aria-label="Upload progress"></progress></div>';
+ if(p.failed)return '<div class="intake-banner failed" role="alert"><div><strong>'+plural(p.failed,'piece','pieces')+' couldn’t be uploaded</strong><span class="hint">'+esc(intake.state.failed[0].message)+'</span></div><button type="button" class="intake-retry">Retry</button></div>';
+ return '<div class="intake-banner done" role="status"><div><strong>'+plural(p.saved,'piece','pieces')+' uploaded</strong>'+(p.skipped?'<span class="hint">'+plural(p.skipped,'photo was','photos were')+' already in your closet, so '+(p.skipped===1?'it was':'they were')+' skipped.</span>':'')+'</div></div>';
+}
+const tabButton=(key,label,n)=>'<button type="button" role="tab" id="tab-'+key+'" data-tab="'+key+'" aria-selected="'+(closetTab===key)+'" tabindex="'+(closetTab===key?0:-1)+'">'+label+' <span class="count">'+n+'</span></button>';
+async function toCloset(ids){
+ const list=ids.map(id=>items.find(i=>i.id===id)).filter(Boolean),missing=list.filter(i=>!i.category);
+ if(missing.length){notify(plural(missing.length,'piece needs','pieces need')+' a category first. Select '+(missing.length===1?'it':'them')+' and use Move to category.');return false}
+ await batch(list.map(i=>({store:'items',record:{...i,intake:undefined}})));await refresh();for(const id of ids)picked.delete(id);
+ render();notify('Added '+plural(list.length,'piece','pieces')+' to your closet.');return true;
+}
+function closet(tab){
+ if((tab==='closet'||tab==='inbox')&&tab!==closetTab){closetTab=tab;picked.clear();picking=false}
+ const inbox=()=>closetTab==='inbox',pool=()=>inbox()?inboxItems():closetPieces();
+ for(const id of [...picked])if(!pool().some(i=>i.id===id))picked.delete(id);
  if(picked.size)picking=true;
- sheet('Closet','<div class="vstack closet"><div class="row"><label class="field">Search<input type="search" id="item-search" placeholder="Search your closet"></label><label class="field">Category<select id="cat-filter">'+options(['All categories',...categories],'All categories')+'</select></label></div><div class="actions"><button type="button" id="add-item" class="primary">'+icon('plus')+'Add pieces</button><button type="button" id="pick-mode" aria-pressed="false">Select</button><span id="item-count" class="hint"></span></div><div id="catalog" class="list-grid"></div><div id="bulk-bar" class="bulk-bar" hidden></div></div>');
+ const filters=['All categories',...categories].map(c=>'<option>'+esc(c)+'</option>').join('')+(inbox()?'<option value="none">No category yet</option>':'');
+ sheet('Closet','<div class="vstack closet"><div class="tabs" role="tablist" aria-label="Closet sections">'+tabButton('closet','Closet',closetPieces().length)+tabButton('inbox','Unreviewed',inboxItems().length)+'</div><div id="intake-slot"></div><div class="row"><label class="field">Search<input type="search" id="item-search" placeholder="Search your closet"></label><label class="field">Category<select id="cat-filter">'+filters+'</select></label></div><div class="actions" id="closet-tools"></div><div id="catalog" class="list-grid" role="tabpanel" aria-labelledby="tab-'+closetTab+'"></div><div id="bulk-bar" class="bulk-bar" hidden></div></div>');
  let shown=[];
  const bar=()=>{
   const el=$('#bulk-bar');el.hidden=!picking;if(!picking)return;
   const n=picked.size,allShown=shown.length&&shown.every(i=>picked.has(i.id));
   el.innerHTML='<div class="bulk-head"><strong role="status">'+(n?plural(n,'piece','pieces')+' selected':'Tap pieces to select them')+'</strong><div class="actions">'+(shown.length?'<button type="button" class="text-btn" id="pick-all">'+(allShown?'Unselect shown':'Select all shown')+'</button>':'')+(n?'<button type="button" class="text-btn" id="pick-none">Clear</button>':'')+'</div></div>'
-   +(n?'<div class="bulk-actions"><label class="field bulk-move"><span class="sr-only">Move selected pieces to category</span><select id="bulk-cat"><option value="" selected disabled>Move to category…</option>'+categories.map(c=>'<option>'+esc(c)+'</option>').join('')+'</select></label><button type="button" id="bulk-apply" disabled>Move</button><button type="button" id="bulk-review">Review</button><button type="button" id="bulk-delete" class="danger">Delete</button></div>':'');
+   +(n?'<div class="bulk-actions"><label class="field bulk-move"><span class="sr-only">Move selected pieces to category</span><select id="bulk-cat"><option value="" selected disabled>Move to category…</option>'+categories.map(c=>'<option>'+esc(c)+'</option>').join('')+'</select></label><button type="button" id="bulk-apply" disabled>Move</button>'+(inbox()?'<button type="button" id="bulk-add">Add to closet</button>':'')+'<button type="button" id="bulk-review">Review</button><button type="button" id="bulk-delete" class="danger">Delete</button></div>':'');
   on('#pick-all','click',()=>{if(allShown)shown.forEach(i=>picked.delete(i.id));else shown.forEach(i=>picked.add(i.id));draw()});
   on('#pick-none','click',()=>{picked.clear();draw()});
   on('#bulk-cat','change',e=>{$('#bulk-apply').disabled=!e.target.value});
   on('#bulk-apply','click',async()=>{const cat=$('#bulk-cat').value;if(!cat)return;const ids=[...picked];await batch(ids.map(id=>({store:'items',record:{...items.find(i=>i.id===id),category:cat}})));await refresh();draw();render();notify('Moved '+plural(ids.length,'piece','pieces')+' to '+cat+'.')});
-  on('#bulk-review','click',()=>{const chosen=items.filter(i=>picked.has(i.id)).map(i=>({...i}));if(chosen.length)editItems(chosen,[],true)});
+  on('#bulk-add','click',async()=>{if(await toCloset([...picked]))draw()});
+  on('#bulk-review','click',()=>{const ids=shown.filter(i=>picked.has(i.id)).map(i=>i.id),rest=[...picked].filter(id=>!ids.includes(id));if(ids.length+rest.length)review([...ids,...rest],{inbox:inbox()})});
   on('#bulk-delete','click',()=>askDelete([...picked],draw));
  };
  const draw=()=>{
-  const query=$('#item-search').value.toLowerCase().trim(),cat=$('#cat-filter').value;
-  shown=items.filter(i=>(cat==='All categories'||cat===i.category)&&[i.name,i.category,i.color,i.status,i.material,i.pattern].some(v=>String(v||'').toLowerCase().includes(query)));
+  if(!$('#catalog'))return;
+  $('#intake-slot').innerHTML=intakeBanner();document.querySelectorAll('.intake-retry').forEach(b=>b.onclick=()=>intake.retry());
+  $('#tab-closet .count').textContent=closetPieces().length;$('#tab-inbox .count').textContent=inboxItems().length;
+  const query=$('#item-search').value.toLowerCase().trim(),cat=$('#cat-filter').value,list=pool();
+  shown=list.filter(i=>(cat==='All categories'||(cat==='none'?!i.category:cat===i.category))&&[i.name,i.category,i.color,i.status,i.material,i.pattern].some(v=>String(v||'').toLowerCase().includes(query)));
+  const fresh=list.filter(i=>i.intake==='new').length,ready=list.filter(i=>i.intake==='ready').length;
+  $('#closet-tools').innerHTML=inbox()
+   ?(fresh?'<button type="button" class="primary" id="review-all">Review one by one</button>':'')+(ready?'<button type="button" '+(fresh?'':'class="primary" ')+'id="add-ready">Add '+plural(ready,'reviewed piece','reviewed pieces')+' to closet</button>':'')+'<button type="button" id="pick-mode" aria-pressed="false">Select</button><button type="button" class="text-btn" id="add-item">Add photos</button><span id="item-count" class="hint"></span>'
+   :'<button type="button" id="add-item" class="primary">'+icon('plus')+'Add pieces</button><button type="button" id="pick-mode" aria-pressed="false">Select</button><span id="item-count" class="hint"></span>';
   const mode=$('#pick-mode');mode.setAttribute('aria-pressed',String(picking));mode.textContent=picking?'Done selecting':'Select';
-  $('#item-count').textContent=plural(shown.length,'piece','pieces');
-  const tile=i=>{const on=picked.has(i.id);return '<button type="button" class="tile'+(picking?' pickable':'')+(on?' picked':'')+'" '+(picking?'data-pick="'+i.id+'" aria-pressed="'+on+'"':'data-item="'+i.id+'"')+'>'+(picking?'<span class="tick" aria-hidden="true"></span>':'')+'<img alt="" src="'+esc(source(i.photos[0]))+'"><strong>'+esc(i.name)+'</strong><small>'+esc(i.category)+(i.status!=='available'?' · '+esc(i.status):'')+'</small></button>'};
-  $('#catalog').innerHTML=shown.length?shown.map(tile).join(''):'<div class="empty-note">'+(items.length?'No matching pieces.':'Add your first piece to start your closet.')+'</div>';
-  document.querySelectorAll('[data-item]').forEach(b=>b.onclick=wrap(()=>editItems([{...items.find(i=>i.id===b.dataset.item)}],[],true)));
+  $('#item-count').textContent=inbox()?(list.length?fresh+' to review · '+ready+' reviewed':''):plural(shown.length,'piece','pieces');
+  on('#add-item','click',uploadStart);
+  on('#pick-mode','click',()=>{picking=!picking;if(!picking)picked.clear();draw();$('#pick-mode').focus()});
+  on('#review-all','click',()=>{const ids=inboxItems().map(i=>i.id),start=inboxItems().findIndex(i=>i.intake==='new');review(ids,{inbox:true,index:Math.max(0,start)})});
+  on('#add-ready','click',async()=>{if(await toCloset(inboxItems().filter(i=>i.intake==='ready').map(i=>i.id)))draw()});
+  const tile=i=>{const on=picked.has(i.id);return '<button type="button" class="tile'+(picking?' pickable':'')+(on?' picked':'')+'" '+(picking?'data-pick="'+i.id+'" aria-pressed="'+on+'"':'data-open="'+i.id+'"')+'>'+(picking?'<span class="tick" aria-hidden="true"></span>':'')+(i.intake?'<span class="pill tile-pill'+(i.intake==='ready'?'':' new')+'">'+(i.intake==='ready'?'Reviewed':'New')+'</span>':'')+'<img alt="" src="'+esc(source(i.photos[0]))+'"><strong>'+esc(i.name)+'</strong><small>'+(i.category?esc(i.category):'No category yet')+(i.status!=='available'?' · '+esc(i.status):'')+'</small></button>'};
+  $('#catalog').innerHTML=shown.length?shown.map(tile).join(''):'<div class="empty-note">'+(list.length?'No matching pieces.':inbox()?'Nothing to review. Photos you upload with “Review later” appear here.':'Add your first piece to start your closet.')+'</div>';
+  document.querySelectorAll('[data-open]').forEach(b=>b.onclick=wrap(()=>{const id=b.dataset.open;if(inbox()){const ids=shown.map(i=>i.id);review(ids,{inbox:true,index:ids.indexOf(id)})}else review([id])}));
   document.querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>{const id=b.dataset.pick;picked.has(id)?picked.delete(id):picked.add(id);const on=picked.has(id);b.classList.toggle('picked',on);b.setAttribute('aria-pressed',String(on));bar()});
   bar();
  };
- on('#pick-mode','click',()=>{picking=!picking;if(!picking)picked.clear();draw();$('#pick-mode').focus()});
- on('#item-search','input',draw);on('#cat-filter','change',draw);on('#add-item','click',uploadStart);draw();
+ const tabs=[...document.querySelectorAll('[data-tab]')];
+ tabs.forEach(t=>{t.onclick=()=>closet(t.dataset.tab);t.onkeydown=e=>{if(e.key!=='ArrowRight'&&e.key!=='ArrowLeft')return;e.preventDefault();const next=tabs[(tabs.indexOf(t)+(e.key==='ArrowRight'?1:tabs.length-1))%tabs.length];closet(next.dataset.tab);$('#tab-'+next.dataset.tab)?.focus()}});
+ on('#item-search','input',draw);on('#cat-filter','change',draw);draw();
+ redrawCloset=draw;
 }
 const accepts='image/jpeg,image/png,image/webp,image/gif,image/avif,image/heic,image/heif,.heic,.heif';
 function dropZone(id,label){return '<label class="drag" id="'+id+'-drop">'+esc(label)+'<input type="file" id="'+id+'" multiple accept="'+accepts+'"></label>'}
 function bindDrop(id,fn){const el=$('#'+id+'-drop');on('#'+id,'change',e=>fn([...e.target.files]));el.ondragover=e=>{e.preventDefault();el.classList.add('over')};el.ondragleave=()=>el.classList.remove('over');el.ondrop=wrap(async e=>{e.preventDefault();el.classList.remove('over');await fn([...e.dataTransfer.files])})}
+// Photos upload as soon as they're chosen; each piece lands in Unreviewed. Review now or later.
 function uploadStart(){
- sheet('Add to closet','<div class="vstack"><label class="field">These photos show<select id="batch-mode"><option value="separate">A different piece in each photo</option><option value="angles">Multiple angles of one piece</option></select></label>'+dropZone('new-files','Drop photos here, or choose files')+'<p id="intake-status" class="hint" role="status" aria-live="polite"></p><p class="hint">You’ll review each piece before it’s added. iPhone HEIC photos work.</p><p id="inline-error" class="error" role="alert"></p></div>');
- let preparing=0;guard={dirty:()=>preparing>0,summary:()=>'Your photos are still being prepared and haven’t been added yet.'};
- bindDrop('new-files',async files=>{if(!files.length)return;const mode=$('#batch-mode').value,seq=dialogSeq;$('#new-files').disabled=true;preparing=files.length;try{
-  const records=[],status=$('#intake-status');for(const [n,file] of files.entries()){if(status)status.textContent='Preparing photo '+(n+1)+' of '+files.length+'…';const r=await photoRecord(file);if(!records.some(x=>x.id===r.id))records.push({...r,name:file.name.replace(/\.[^/.]+$/,'').replace(/[_-]/g,' ')})}if(status)status.textContent='';
-  if(seq!==dialogSeq)return;
-  const recordGroups=mode==='angles'?[records]:records.map(r=>[r]);const drafts=recordGroups.map(group=>({id:uid(),name:group[0].name,photos:group.map(r=>r.id),category:categories[0],status:'available'}));
-  editItems(drafts,records,false);
- }finally{preparing=0;if($('#new-files'))$('#new-files').disabled=false;const st=$('#intake-status');if(st)st.textContent=''}});
-}
-function editItems(drafts,originals,editing,index=0,base=JSON.stringify(drafts)){
- const d=drafts[index];const local=new Map(originals.map(o=>[o.id,o]));const viewUrls=[];
- const display=id=>{if(assets.has(id))return source(id);const blob=local.get(id)?.blob;if(!blob)return '';const url=URL.createObjectURL(blob);viewUrls.push(url);return url};
- const free=()=>{for(const u of viewUrls)URL.revokeObjectURL(u)};
- sheet(editing&&drafts.length===1?'Edit piece':'Review '+(drafts.length>1?'piece '+(index+1)+' of '+drafts.length:'piece'),'<form id="edit-form" class="vstack"><div class="photo-strip">'+d.photos.map((id,n)=>'<div><img alt="Piece angle '+(n+1)+'" src="'+esc(display(id))+'">'+(d.photos.length>1?'<button type="button" class="text-btn" data-remove-angle="'+id+'">Remove</button>':'')+'</div>').join('')+'</div><details class="settings"><summary>More photos of this piece</summary><div><label class="field">Add angles<input type="file" id="more-angles" multiple accept="'+accepts+'"></label></div></details>'+(state.enabled?'<div class="actions"><button type="button" id="tag-photo">Suggest attributes with AI</button><span class="hint">Sends the first photo for analysis.</span></div>':'')+'<div id="tag-results" aria-live="polite"></div><label class="field">Item name<input name="name" maxlength="120" required value="'+esc(d.name)+'"></label><div class="grid2"><label class="field">Category<select name="category">'+options(categories,d.category)+'</select></label><label class="field">Status<select name="status">'+options(['available','laundry','unavailable','archived'],d.status)+'</select></label></div><details class="settings" '+(editing?'open':'')+'><summary>Attributes &amp; makeup details</summary><div class="grid2">'+attrs.map(([k,l])=>'<label class="field">'+l+'<input name="'+k+'" maxlength="500" value="'+esc(d[k])+'"></label>').join('')+'</div></details><p id="inline-error" role="alert" class="error"></p><div class="form-foot"><button class="primary">'+(index<drafts.length-1?'Review next piece':editing?(drafts.length>1?'Save '+drafts.length+' pieces':'Save changes'):drafts.length>1?'Add '+drafts.length+' pieces':'Add to closet')+'</button><button type="button" id="back-closet">Cancel</button>'+(editing&&drafts.length===1?'<button type="button" id="delete-item" class="danger">Delete piece</button>':'')+'</div></form>');
- const seq=dialogSeq;
- $('#sheet').addEventListener('close',free,{once:true});
- const read=()=>Object.assign(d,Object.fromEntries(new FormData($('#edit-form'))));
- const again=()=>{free();editItems(drafts,originals,editing,index,base)};
- const count=drafts.length;
- guard={dirty:()=>{if(!$('#edit-form'))return false;read();return !editing||JSON.stringify(drafts)!==base},discard:free,
-  summary:()=>editing?(count===1?'Your changes to this piece haven’t been saved.':'Your changes to these '+count+' pieces haven’t been saved.'):count===1?'This piece and its photos haven’t been added to your closet.':'These '+count+' pieces and their photos haven’t been added to your closet.'};
- document.querySelectorAll('[data-remove-angle]').forEach(b=>b.onclick=wrap(()=>{read();d.photos=d.photos.filter(p=>p!==b.dataset.removeAngle);again()}));
- on('#more-angles','change',async e=>{const files=[...e.target.files];read();const add=[];for(const [n,f] of files.entries()){notify('Preparing photo '+(n+1)+' of '+files.length+'…');add.push(await photoRecord(f))}if(seq!==dialogSeq)return;for(const r of add)if(!d.photos.includes(r.id)){d.photos=[...d.photos,r.id];originals.push(r)}again()});
- on('#back-closet','click',()=>requestClose(()=>{free();closet()}));
- on('#delete-item','click',()=>askDelete([d.id],()=>{free();closet()}));
- on('#tag-photo','click',async e=>{const btn=e.currentTarget;btn.disabled=true;btn.textContent='Analyzing photo…';try{
-  const blob=local.get(d.photos[0])?.blob||await assetBlob(d.photos[0]);
-  const {suggestions}=await request('tag',{image:await referenceJPEG(blob)});if(seq!==dialogSeq)return;if(!Array.isArray(suggestions)||!suggestions.length)throw Error('No clear item was detected. Enter its attributes manually.');
-  const target=$('#tag-results');target.innerHTML='<span class="section-label">Suggested pieces</span><p class="hint">Choose one to fill the current record.'+(suggestions.length>1&&!editing?' You can also review each as a separate piece.':'')+'</p><div class="actions">'+suggestions.map((s,i)=>'<button type="button" data-sug="'+i+'">'+esc(s.name)+'</button>').join('')+(suggestions.length>1&&!editing?'<button type="button" id="split">Review all as separate pieces</button>':'')+'</div>';
-  function apply(rec,s){for(const k of ['name','category',...attrs.map(a=>a[0])])if(typeof s[k]==='string'&&(k!=='category'||categories.includes(s[k])))rec[k]=s[k]}
-  target.querySelectorAll('[data-sug]').forEach(b=>b.onclick=wrap(()=>{read();apply(d,suggestions[Number(b.dataset.sug)]);again()}));
-  on('#split','click',()=>{read();const records=suggestions.map((s,n)=>{const record={...d,id:n?uid():d.id,photos:[...d.photos]};apply(record,s);return record});drafts.splice(index,1,...records);again()});
- }finally{btn.disabled=false;btn.textContent='Suggest attributes with AI'}});
- on('#edit-form','submit',async e=>{e.preventDefault();read();d.name=d.name.trim();if(!d.name)throw Error('Give this piece a name.');if(index<drafts.length-1){free();editItems(drafts,originals,editing,index+1,base);return}
-  const dbItems=await all('items');const seen=new Map(dbItems.filter(i=>!drafts.some(d=>d.id===i.id)).map(i=>[i.photos[0]+'|'+i.name.toLowerCase(),i.id]));
-  for(const draft of drafts){const key=draft.photos[0]+'|'+draft.name.toLowerCase();if(seen.has(key))throw Error('A piece with this name and original photo already exists.');seen.set(key,draft.id)}
-  const changes=[...originals.map(({id,blob})=>({store:'assets',record:{id,blob}})),...drafts.map(record=>({store:'items',record}))];
-  await batch(changes);guard=null;await collectAssets();await refresh();free();closet();render();notify(editing?(drafts.length>1?'Saved '+drafts.length+' pieces.':'Closet updated.'):'Added to your closet.');
+ sheet('Add photos','<div class="vstack"><label class="field">These photos show<select id="batch-mode"><option value="separate">A different piece in each photo</option><option value="angles">Multiple angles of one piece</option></select></label><fieldset class="choice"><legend class="section-label">Review</legend><label><input type="radio" name="when" value="now" '+(reviewLater?'':'checked')+'> Now, one by one</label><label><input type="radio" name="when" value="later" '+(reviewLater?'checked':'')+'> Later, from Unreviewed</label></fieldset>'+dropZone('new-files','Drop photos here, or choose files')+'<p class="hint">Photos upload right away and each piece is saved as soon as it’s up. iPhone HEIC photos work.</p><p id="inline-error" class="error" role="alert"></p></div>');
+ bindDrop('new-files',async files=>{
+  if(!files.length)return;
+  reviewLater=$('input[name=when]:checked')?.value==='later';
+  const pieces=planPieces(files,$('#batch-mode').value,uid);intake.add(pieces);updatePill();
+  if(reviewLater){closet('inbox');notify('Uploading '+plural(pieces.length,'piece','pieces')+' to Unreviewed.')}
+  else review(pieces.map(p=>p.id),{inbox:true});
  });
+}
+const fields=['name','category','status',...attrs.map(a=>a[0])];
+// Reviews saved pieces one at a time. Each piece is saved when you move on, so stopping midway keeps your progress.
+function review(ids,{inbox=false,index=0}={}){
+ ids=[...ids];let edits={};const viewUrls=[];
+ const free=()=>{for(const u of viewUrls.splice(0))URL.revokeObjectURL(u)};
+ const show=i=>{edits={};index=Math.max(0,Math.min(i,ids.length-1));draw()};
+ const finish=()=>{free();if(inbox){closet('inbox');notify('Review saved. Add reviewed pieces to your closet when you’re ready.')}else{closet('closet');notify(ids.length>1?'Saved '+plural(ids.length,'piece','pieces')+'.':'Closet updated.')}};
+ const title=()=>ids.length===1?(inbox?'Review piece':'Edit piece'):'Review piece '+(index+1)+' of '+ids.length;
+ const values=()=>{const form=$('#edit-form');return form?Object.fromEntries(fields.map(k=>[k,String(new FormData(form).get(k)??'')])):{}};
+ const changed=(it,v)=>fields.some(k=>String(v[k]??'')!==String(it[k]??''));
+ async function save(it,ready){
+  const v=values(),name=v.name.trim();
+  if(!name)throw Error('Give this piece a name.');
+  if(ready&&!v.category)throw Error('Choose a category.');
+  if(!changed(it,v)&&!(inbox&&ready&&it.intake!=='ready'))return;
+  await put('items',{...it,...v,name,...(inbox&&ready&&it.intake?{intake:'ready'}:{})});await refresh();
+ }
+ function draw(){
+  free();reviewWake=null;
+  const id=ids[index],it=items.find(x=>x.id===id);
+  const nav=(index>0?'<button type="button" id="prev-piece">Previous</button>':'');
+  if(!it){
+   const st=intake?.statusOf(id);
+   if(!st){ids.splice(index,1);if(!ids.length)return finish();return show(index)}
+   const p=intake.progress();
+   sheet(title(),'<div class="vstack piece-wait">'+(st.step==='failed'?'<strong>This piece couldn’t be uploaded</strong><p class="hint">'+esc(st.message)+'</p><div class="actions"><button type="button" class="primary intake-retry">Retry upload</button></div>':'<span class="loading" aria-hidden="true"></span><strong>Uploading this piece…</strong><p class="hint" role="status">'+p.finished+' of '+p.total+' pieces uploaded. This one opens as soon as it’s ready.</p>')+'<div class="form-foot">'+nav+(index<ids.length-1?'<button type="button" id="skip-piece">Skip for now</button>':'')+'<button type="button" id="back-closet">Cancel</button></div></div>');
+   reviewWake=()=>{if(items.some(x=>x.id===id)||intake.statusOf(id)?.step==='failed'||!intake.statusOf(id))draw()};
+   document.querySelectorAll('.intake-retry').forEach(b=>b.onclick=()=>{intake.retry();updatePill();draw()});
+   on('#prev-piece','click',()=>show(index-1));on('#skip-piece','click',()=>show(index+1));
+   on('#back-closet','click',()=>requestClose(()=>{free();closet(inbox?'inbox':'closet')}));
+   return;
+  }
+  const d={...it,...edits},last=index===ids.length-1;
+  const display=pid=>{if(assets.has(pid))return source(pid);return ''};
+  const catOptions=(d.category?'':'<option value="" selected disabled>Choose a category</option>')+options(categories,d.category);
+  sheet(title(),'<form id="edit-form" class="vstack" novalidate><div class="photo-strip">'+d.photos.map((pid,n)=>'<div><img alt="Piece angle '+(n+1)+'" src="'+esc(display(pid))+'">'+(d.photos.length>1?'<button type="button" class="text-btn" data-remove-angle="'+pid+'">Remove</button>':'')+'</div>').join('')+'</div><details class="settings"><summary>More photos of this piece</summary><div><label class="field">Add angles<input type="file" id="more-angles" multiple accept="'+accepts+'"></label></div></details>'+(state.enabled?'<div class="actions"><button type="button" id="tag-photo">Suggest attributes with AI</button><span class="hint">Sends the first photo for analysis.</span></div>':'')+'<div id="tag-results" aria-live="polite"></div><label class="field">Item name<input name="name" maxlength="120" required value="'+esc(d.name)+'"></label><div class="grid2"><label class="field">Category<select name="category">'+catOptions+'</select></label><label class="field">Status<select name="status">'+options(['available','laundry','unavailable','archived'],d.status)+'</select></label></div><details class="settings" '+(!inbox&&ids.length===1?'open':'')+'><summary>Attributes &amp; makeup details</summary><div class="grid2">'+attrs.map(([k,l])=>'<label class="field">'+l+'<input name="'+k+'" maxlength="500" value="'+esc(d[k])+'"></label>').join('')+'</div></details><p id="inline-error" role="alert" class="error"></p><div class="form-foot">'+nav+'<button class="primary">'+(last?(ids.length>1||inbox?'Save &amp; finish':'Save changes'):'Save &amp; next')+'</button><button type="button" id="back-closet">Cancel</button><button type="button" id="delete-item" class="danger">Delete piece</button></div></form>');
+  guard={dirty:()=>$('#edit-form')?changed(it,values()):false,summary:()=>'Your changes to this piece haven’t been saved.'+(ids.length>1?' Pieces you already saved are kept.':'')};
+  const keep=()=>{edits={...edits,...values()}};
+  const again=()=>{keep();draw()};
+  document.querySelectorAll('[data-remove-angle]').forEach(b=>b.onclick=wrap(async()=>{keep();await put('items',{...it,photos:it.photos.filter(p=>p!==b.dataset.removeAngle)});await collectAssets();await refresh();draw()}));
+  on('#more-angles','change',async e=>{const files=[...e.target.files];keep();const add=[];for(const [n,f] of files.entries()){notify('Preparing photo '+(n+1)+' of '+files.length+'…');const r=await photoRecord(f);await uploadPhoto(r);add.push(r.id)}const latest=items.find(x=>x.id===id);await put('items',{...latest,photos:[...new Set([...latest.photos,...add])]});await refresh();draw()});
+  on('#prev-piece','click',async()=>{await save(it,false);show(index-1)});
+  on('#back-closet','click',()=>requestClose(()=>{free();closet(inbox?'inbox':'closet')}));
+  on('#delete-item','click',()=>askDelete([id],()=>{ids.splice(index,1);if(!ids.length)return finish();show(index)}));
+  on('#tag-photo','click',async e=>{const btn=e.currentTarget,seq=dialogSeq;btn.disabled=true;btn.textContent='Analyzing photo…';try{
+   const {suggestions}=await request('tag',{image:await referenceJPEG(await assetBlob(it.photos[0]))});if(seq!==dialogSeq)return;if(!Array.isArray(suggestions)||!suggestions.length)throw Error('No clear item was detected. Enter its attributes manually.');
+   const target=$('#tag-results');target.innerHTML='<span class="section-label">Suggested pieces</span><p class="hint">Choose one to fill this piece.'+(suggestions.length>1?' You can also review each as a separate piece.':'')+'</p><div class="actions">'+suggestions.map((s,i)=>'<button type="button" data-sug="'+i+'">'+esc(s.name)+'</button>').join('')+(suggestions.length>1?'<button type="button" id="split">Review all as separate pieces</button>':'')+'</div>';
+   const pick=s=>Object.fromEntries(['name','category',...attrs.map(a=>a[0])].filter(k=>typeof s[k]==='string'&&(k!=='category'||categories.includes(s[k]))).map(k=>[k,s[k]]));
+   target.querySelectorAll('[data-sug]').forEach(b=>b.onclick=wrap(()=>{keep();edits={...edits,...pick(suggestions[Number(b.dataset.sug)])};draw()}));
+   on('#split','click',async()=>{keep();edits={...edits,...pick(suggestions[0])};const extra=suggestions.slice(1).map((s,n)=>({...it,...pick(s),id:uid(),created:(it.created||Date.now())+(n+1)/100,...(it.intake?{intake:'new'}:{})}));await batch(extra.map(record=>({store:'items',record})));await refresh();ids.splice(index+1,0,...extra.map(x=>x.id));draw()});
+  }finally{if(btn.isConnected){btn.disabled=false;btn.textContent='Suggest attributes with AI'}}});
+  on('#edit-form','submit',async e=>{e.preventDefault();await save(it,true);guard=null;if(last)finish();else show(index+1)});
+ }
+ draw();
 }
 function profile(){
  const slots=[...refSlots,...refs.filter(r=>!refSlots.some(([id])=>r.id===id)).map(r=>[r.id,r.label||'Additional reference'])];
@@ -272,12 +387,27 @@ function profile(){
  document.querySelectorAll('[data-delref]').forEach(b=>b.onclick=wrap(async()=>{await remove('refs',b.dataset.delref);await collectAssets();await refresh();profile();render()}));
 }
 async function navigate(){
- const seq=++navSeq;const page=location.hash==='#mirror'?'mirror':'studio';if(cleanupMirror){cleanupMirror();cleanupMirror=null}close();$('#studio').hidden=page!=='studio';$('#mirror').hidden=page!=='mirror';
+ const seq=++navSeq;stopReader();const page=location.hash==='#mirror'?'mirror':'studio';if(cleanupMirror){cleanupMirror();cleanupMirror=null}close();$('#studio').hidden=page!=='studio';$('#mirror').hidden=page!=='mirror';
  for(const name of ['studio','mirror']){const link=$('#nav-'+name);if(name===page)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current')}
  if(page==='studio'){render();return}
- try{const {mountMirror}=await import('./mirror.js');if(seq!==navSeq)return;cleanupMirror=mountMirror($('#mirror'),{request:api,getContext:async()=>{await refresh();return context()},onSassChange:value=>setting('sass',Number(value))})}catch(e){$('#mirror').textContent='Mirror could not open. '+e.message}
+ try{const {mountMirror}=await import('./mirror.js');if(seq!==navSeq)return;cleanupMirror=mountMirror($('#mirror'),{request:api,getContext:async()=>{await refresh();return context()},onSassChange:value=>setting('sass',Number(value)),autoFrames:pref().autoFrames!==false,onAutoFramesChange:value=>setting('autoFrames',value)})}catch(e){$('#mirror').textContent='Mirror could not open. '+e.message}
 }
 on('#open-profile','click',()=>{if(ready)profile()});
+// Upload progress outside the Closet: a small pill that opens Unreviewed.
+function updatePill(){
+ const el=$('#intake-pill'),p=intake?.progress();if(!el||!p)return;clearTimeout(pillTimer);
+ if(p.busy){el.hidden=false;el.className='intake-pill';el.innerHTML='<span class="loading" aria-hidden="true"></span>Uploading '+p.finished+' of '+p.total;return}
+ if(p.failed){el.hidden=false;el.className='intake-pill failed';el.textContent=plural(p.failed,'piece','pieces')+' couldn’t upload · Open';return}
+ if(p.total){el.hidden=false;el.className='intake-pill done';el.textContent=plural(p.saved,'piece','pieces')+' uploaded · Review';pillTimer=setTimeout(()=>{el.hidden=true},8000);return}
+ el.hidden=true;
+}
+$('#intake-pill').onclick=()=>{if(ready)closet('inbox')};
+function onIntake(ev){
+ if(ev.type==='idle'){const p=intake.progress();if(p.total)live(p.failed?plural(p.failed,'piece','pieces')+' couldn’t be uploaded.':plural(p.saved,'piece','pieces')+' uploaded to Unreviewed.')}
+ if(intakeTimer&&ev.type!=='idle')return;
+ clearTimeout(intakeTimer);
+ intakeTimer=setTimeout(async()=>{intakeTimer=null;await refresh();updatePill();redrawCloset?.();reviewWake?.();if(!intake.busy()&&!$('#sheet').open)render()},ev.type==='idle'?0:350);
+}
 function signIn(){
  $('#studio').hidden=false;$('#mirror').hidden=true;
  const body=keyProblem?'<p class="fail" role="alert">'+esc(keyProblem)+'</p>':!configured?'<p class="sheet-copy">Add your Supabase project URL and publishable key to config.js, then reload.</p>':'<p class="sheet-copy">Sign in to open your closet. Your photos and looks are stored privately in your account.</p><form id="signin-form" class="vstack"><label class="field">Email<input type="email" name="email" required autocomplete="email" inputmode="email"></label><button class="primary">Email me a sign-in link</button><p id="inline-error" class="error" role="alert"></p></form>';
@@ -286,7 +416,8 @@ function signIn(){
 }
 try{
  if(!await currentSession()){signIn()}else{
-  await openStore();await Promise.all([refresh(),status()]);active=looks.some(l=>l.id===settings.activeLook)?settings.activeLook:(looks[0]?.id||'');ready=true;await navigate();window.addEventListener('hashchange',()=>navigate());
+  await openStore();await Promise.all([refresh(),status()]);
+  intake=createIntake({prepare:photoRecord,upload:uploadPhoto,save:record=>put('items',record),knownPhoto:id=>items.some(i=>i.photos?.[0]===id),onChange:onIntake});active=looks.some(l=>l.id===settings.activeLook)?settings.activeLook:(looks[0]?.id||'');ready=true;await navigate();window.addEventListener('hashchange',()=>navigate());
   client.auth.onAuthStateChange(event=>{if(event==='SIGNED_OUT')location.reload()});
  }
 }catch(e){$('#studio').textContent=e.message||'Your closet could not be opened. Reload to try again.'}

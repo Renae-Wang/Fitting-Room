@@ -50,12 +50,7 @@ export async function assetBlob(id) {
 
 // Applies changes in order: new photos first, then record saves, then removals.
 export async function batch(changes) {
-  const uploads = changes.filter(c => c.store === 'assets' && !c.remove && !cache.assets.has(c.record.id));
-  for (const {record} of uploads) {
-    const {error} = await client.storage.from(bucket).upload(path(record.id), record.blob, {contentType: record.blob.type, upsert: false});
-    if (error && !/exist|duplicate/i.test(error.message)) throw Error('A photo could not be uploaded. Check your connection and try again.');
-    cache.assets.set(record.id, {id: record.id, blob: record.blob, url: URL.createObjectURL(record.blob)});
-  }
+  for (const c of changes) if (c.store === 'assets' && !c.remove) await uploadPhoto(c.record);
   const rows = new Map();
   for (const c of changes) if (c.store !== 'assets' && !c.remove) rows.set(c.store + '/' + c.record.id, {user_id: uid, store: c.store, id: c.record.id, data: c.record, updated_at: new Date().toISOString()});
   if (rows.size) {
@@ -70,6 +65,13 @@ export async function batch(changes) {
     cache[c.store].delete(c.remove);
   }
 }
+// Uploads one photo unless it's already in the account. A photo that already exists counts as uploaded.
+export async function uploadPhoto({id, blob}) {
+  if (cache.assets.has(id)) return;
+  const {error} = await client.storage.from(bucket).upload(path(id), blob, {contentType: blob.type, upsert: false});
+  if (error && !/exist|duplicate/i.test(error.message)) throw Error('A photo could not be uploaded. Check your connection and try again.');
+  cache.assets.set(id, {id, blob, url: URL.createObjectURL(blob)});
+}
 export const put = (store, record) => batch([{store, record}]);
 export const remove = (store, id) => batch([{store, remove: id}]);
 
@@ -83,11 +85,12 @@ async function dropAssets(ids) {
     cache.assets.delete(id);
   }
 }
-// Removes photos that no closet piece or appearance reference uses any more.
+// Removes photos and read-aloud audio that no closet piece, appearance reference or look uses any more.
 export async function collectAssets() {
   const used = new Set();
   for (const row of cache.refs.values()) used.add(row.photo);
   for (const row of cache.items.values()) for (const id of row.photos || []) used.add(id);
+  for (const row of cache.looks.values()) for (const v of Object.values(row.voice || {})) if (v?.asset) used.add(v.asset);
   await dropAssets([...cache.assets.keys()].filter(id => !used.has(id))).catch(() => {});
 }
 

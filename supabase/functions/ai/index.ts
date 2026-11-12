@@ -4,8 +4,8 @@ import {AppError, perform} from '../_shared/provider.mjs';
 
 const env = Deno.env.toObject();
 const admin = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {auth: {persistSession: false}});
-const defaults: Record<string, number> = {select: 8, tag: 20, image: 3, realtime: 3};
-const sizes: Record<string, number> = {image: 48 * 1024 * 1024, tag: 7 * 1024 * 1024, select: 1024 * 1024, realtime: 1024 * 1024};
+const defaults: Record<string, number> = {select: 8, tag: 20, image: 3, realtime: 3, speak: 30};
+const sizes: Record<string, number> = {image: 48 * 1024 * 1024, tag: 7 * 1024 * 1024, select: 1024 * 1024, realtime: 1024 * 1024, speak: 64 * 1024};
 const cors = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',

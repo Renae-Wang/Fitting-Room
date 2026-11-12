@@ -6,7 +6,7 @@ import {dirname,extname,resolve,sep} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 
 const project=dirname(fileURLToPath(import.meta.url));
-const types={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.webp':'image/webp','.jpg':'image/jpeg','.jpeg':'image/jpeg','.ico':'image/x-icon','.woff2':'font/woff2','.txt':'text/plain; charset=utf-8','.wasm':'application/wasm','.json':'application/json; charset=utf-8','.task':'application/octet-stream'};
+const types={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.webp':'image/webp','.jpg':'image/jpeg','.jpeg':'image/jpeg','.ico':'image/x-icon','.woff2':'font/woff2','.txt':'text/plain; charset=utf-8','.wasm':'application/wasm','.mp3':'audio/mpeg','.json':'application/json; charset=utf-8','.task':'application/octet-stream'};
 function json(res,status,data) {
   res.writeHead(status,{'Content-Type':'application/json; charset=utf-8'});
   res.end(JSON.stringify(data));

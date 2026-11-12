@@ -97,3 +97,23 @@ test('paid calls reserve a daily slot first and stop when the limit is reached',
 test('provider API errors are actionable without exposing provider payloads or credentials',async()=>{
   await assert.rejects(perform('tag',{image:photo},adapter(async()=>Response.json({error:'internal-data'},{status:401}))),err=>err.status===502&&!err.message.includes('internal-data')&&err.message.includes('OPENAI_API_KEY'));
 });
+
+test('read-aloud makes one counted speech call, times the words, and survives a failed timing call',async()=>{
+  const calls=[];let reserved=0;
+  const mp3=new Uint8Array([73,68,51,4,0,0]);
+  const fetchImpl=async(url,init)=>{
+    calls.push(url);
+    if(url.endsWith('/audio/speech')){const p=JSON.parse(init.body);assert.equal(p.voice,'marin');assert.equal(p.model,'gpt-4o-mini-tts');assert.equal(p.input,'Tuck the knit.');assert.ok(p.instructions);return new Response(mp3,{status:200});}
+    if(url.endsWith('/audio/transcriptions')){assert.equal(init.body.get('model'),'whisper-1');assert.equal(init.body.get('timestamp_granularities[]'),'word');return Response.json({words:[{word:'Tuck',start:0,end:.3},{word:'the',start:.3,end:.4},{word:'knit',start:.4,end:.8}]});}
+    assert.fail('unexpected '+url);
+  };
+  const result=await perform('speak',{text:'Tuck the knit.'},{env,fetchImpl,reserve:()=>{reserved++;}});
+  assert.equal(reserved,1,'one daily-limit slot per read-aloud');
+  assert.match(result.audio,/^data:audio\/mpeg;base64,/);
+  assert.deepEqual(result.words,[{w:'Tuck',s:0,e:.3},{w:'the',s:.3,e:.4},{w:'knit',s:.4,e:.8}]);
+  assert.ok(!JSON.stringify(result).includes(env.OPENAI_API_KEY));
+  const fallback=await perform('speak',{text:'Tuck the knit.'},{env,fetchImpl:async url=>url.endsWith('/audio/speech')?new Response(mp3):new Response('down',{status:500}),reserve(){}});
+  assert.equal(fallback.words,null,'timing failure still returns the audio');
+  await assert.rejects(perform('speak',{text:''},{env,fetchImpl,reserve(){}}),/read aloud/);
+  await assert.rejects(perform('speak',{text:'x'},{env,fetchImpl:async()=>new Response('',{status:429}),reserve(){}}),/429/);
+});
