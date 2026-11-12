@@ -6,3 +6,5 @@
 node_modules/
 supabase/.temp/
 supabase/.branches/
+public/_qa/
+public/_qa-app.html

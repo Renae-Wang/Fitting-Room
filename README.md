@@ -7,6 +7,7 @@ A private styling studio. The site is static (GitHub Pages); your closet, photos
 - **Supabase database:** one table, `records`, holds closet pieces, appearance references, looks and settings. Row-level security limits every row to your account.
 - **Supabase storage:** a private `photos` bucket holds your photos at `<your user id>/<photo id>`. Only your signed-in account can read them; the app shows them through links that expire after a week.
 - **Supabase function `ai`:** the only place the OpenAI key is used. It accepts requests only from the account in `OWNER_EMAIL`, enforces daily limits in the `usage` table, and runs `supabase/functions/_shared/provider.mjs`.
+- **Outfit details:** after a render, `public/pose.js` finds the face, neckline and hands on this device with Google's MediaPipe pose model (`public/vendor/mediapipe`, about 25 MB, loaded the first time it's needed). It runs in a sandboxed frame (`pose.html`) and never calls a paid service. Marker positions are saved with the look; `public/details.js` matches pieces and notes to each area.
 - **Photos:** JPEG, PNG, WebP, AVIF, GIF and iPhone HEIC. Large photos are resized to 2048 px on the long edge before upload. Safari reads HEIC itself; other browsers convert it in a sandboxed frame (`heic.html`).
 
 ## One-time setup
