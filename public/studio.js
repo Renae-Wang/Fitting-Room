@@ -35,11 +35,19 @@ function sheet(title,markup){guard=null;dialogSeq++;$('#sheet-title').textConten
 function close(){if($('#sheet').open)$('#sheet').close()}
 // Every way out of a sheet goes through requestClose, so unsaved upload work is never lost by accident.
 function requestClose(proceed=close){if(guard?.dirty()){askDiscard(guard.summary?.()||'',()=>{const g=guard;guard=null;g?.discard?.();proceed()});return}guard=null;proceed()}
-function askDiscard(summary,onDiscard){
- const d=$('#confirm');if(d.open)return;$('#confirm-body').textContent=summary+' Pieces already in your closet stay as they are.';
- const keep=$('#keep-reviewing'),drop=$('#discard-work');
- keep.onclick=()=>d.close();drop.onclick=()=>{d.close();onDiscard()};
- d.showModal();keep.focus();
+function askConfirm({title,body,keep,act},onAct){
+ const d=$('#confirm');if(d.open)return;$('#confirm-title').textContent=title;$('#confirm-body').textContent=body;
+ const k=$('#keep-reviewing'),a=$('#discard-work');k.textContent=keep;a.textContent=act;
+ k.onclick=()=>d.close();a.onclick=()=>{d.close();onAct()};
+ d.showModal();k.focus();
+}
+const askDiscard=(summary,onDiscard)=>askConfirm({title:'Discard unsaved work?',body:summary+' Pieces already in your closet stay as they are.',keep:'Keep reviewing',act:'Discard unsaved work'},onDiscard);
+const plural=(n,one,many)=>n+' '+(n===1?one:many);
+// Deleting pieces removes them and any photos nothing else uses. Looks that used them keep a placeholder.
+function askDelete(ids,after){
+ const n=ids.length,used=looks.filter(l=>l.itemIds?.some(id=>ids.includes(id))).length;
+ askConfirm({title:'Delete '+plural(n,'piece','pieces')+'?',body:(n===1?'Its photos are':'Their photos are')+' removed from your account. '+(used?plural(used,'look','looks')+' that used '+(n===1?'it':'them')+' will show a deleted-piece placeholder. ':'')+'This can’t be undone.',keep:n===1?'Keep piece':'Keep pieces',act:'Delete '+plural(n,'piece','pieces')},
+  wrap(async()=>{guard=null;await batch(ids.map(id=>({store:'items',remove:id})));await collectAssets();await refresh();for(const id of ids)picked.delete(id);after();render();notify('Deleted '+plural(n,'piece','pieces')+'.')}));
 }
 const sheetEl=$('#sheet'),confirmEl=$('#confirm');
 $('#close-sheet').onclick=()=>requestClose();
@@ -175,12 +183,39 @@ function lookbook(){
  const rows=looks.map(l=>'<div class="history-row">'+(l.image?'<img alt="" src="'+esc(l.image)+'">':'<span class="history-blank"></span>')+'<div class="history-title"><strong>'+esc(l.title)+'</strong><small>'+esc(l.occasion)+' · '+(l.saved?'Saved':'Generated')+(l.rating?' · '+l.rating+'/5':'')+'</small></div><button data-view="'+l.id+'">View</button><button data-drop="'+l.id+'" aria-label="Remove '+esc(l.title)+'">×</button></div>').join('');
  sheet('Lookbook','<div class="vstack">'+(rows||'<div class="empty-note">Your generated looks and wear ratings will appear here.</div>')+'</div>');
  document.querySelectorAll('[data-view]').forEach(b=>b.onclick=wrap(async()=>{active=b.dataset.view;detailsOn=false;renderError=null;await setting('activeLook',active);close();render()}));
- document.querySelectorAll('[data-drop]').forEach(b=>b.onclick=wrap(async()=>{const id=b.dataset.drop;if(!confirm('Delete this look, its preview, and its rating?'))return;await remove('looks',id);await refresh();if(active===id){active=looks[0]?.id||'';await setting('activeLook',active)}lookbook();render()}));
+ document.querySelectorAll('[data-drop]').forEach(b=>b.onclick=()=>{const id=b.dataset.drop;askConfirm({title:'Delete this look?',body:'Its preview, notes and rating are removed. Your closet pieces stay. This can’t be undone.',keep:'Keep look',act:'Delete look'},wrap(async()=>{await remove('looks',id);await refresh();if(active===id){active=looks[0]?.id||'';await setting('activeLook',active)}lookbook();render()}))});
 }
 function rate(){const l=current();sheet('After wearing','<form id="feedback" class="vstack"><label class="field">Rating<select name="rating" required><option value="">Choose a rating</option>'+[1,2,3,4,5].map(v=>'<option value="'+v+'" '+(v===l.rating?'selected':'')+'>'+v+' / 5</option>').join('')+'</select></label><label class="field">What worked or missed?<textarea name="feedback" maxlength="1000">'+esc(l.feedback)+'</textarea></label><button class="primary">Save feedback</button></form>');on('#feedback','submit',async e=>{e.preventDefault();const f=new FormData(e.target);const latest=(await all('looks')).find(x=>x.id===l.id);if(!latest)throw Error('This look has been removed.');await put('looks',{...latest,rating:Number(f.get('rating')),feedback:f.get('feedback')});await refresh();close();notify('Feedback saved for future styling requests.')})}
+let picking=false;const picked=new Set();
 function closet(){
- sheet('Closet','<div class="vstack"><div class="row"><label class="field">Search<input type="search" id="item-search" placeholder="Search your closet"></label><label class="field">Category<select id="cat-filter">'+options(['All categories',...categories],'All categories')+'</select></label></div><div class="actions"><button id="add-item" class="primary">'+icon('plus')+'Add pieces</button><span id="item-count" class="hint"></span></div><div id="catalog" class="list-grid"></div></div>');
- const draw=()=>{const query=$('#item-search').value.toLowerCase().trim(),cat=$('#cat-filter').value;const filtered=items.filter(i=>(cat==='All categories'||cat===i.category)&&[i.name,i.category,i.color,i.status,i.material,i.pattern].some(v=>String(v||'').toLowerCase().includes(query)));$('#item-count').textContent=filtered.length+' '+(filtered.length===1?'piece':'pieces');$('#catalog').innerHTML=filtered.length?filtered.map(i=>'<button class="tile" data-item="'+i.id+'"><img alt="" src="'+esc(source(i.photos[0]))+'"><strong>'+esc(i.name)+'</strong><small>'+esc(i.category)+(i.status!=='available'?' · '+esc(i.status):'')+'</small></button>').join(''):'<div class="empty-note">'+(items.length?'No matching pieces.':'Add your first piece to start your closet.')+'</div>';document.querySelectorAll('[data-item]').forEach(b=>b.onclick=wrap(()=>editItems([{...items.find(i=>i.id===b.dataset.item)}],[],true)))};
+ for(const id of [...picked])if(!items.some(i=>i.id===id))picked.delete(id);
+ if(picked.size)picking=true;
+ sheet('Closet','<div class="vstack closet"><div class="row"><label class="field">Search<input type="search" id="item-search" placeholder="Search your closet"></label><label class="field">Category<select id="cat-filter">'+options(['All categories',...categories],'All categories')+'</select></label></div><div class="actions"><button type="button" id="add-item" class="primary">'+icon('plus')+'Add pieces</button><button type="button" id="pick-mode" aria-pressed="false">Select</button><span id="item-count" class="hint"></span></div><div id="catalog" class="list-grid"></div><div id="bulk-bar" class="bulk-bar" hidden></div></div>');
+ let shown=[];
+ const bar=()=>{
+  const el=$('#bulk-bar');el.hidden=!picking;if(!picking)return;
+  const n=picked.size,allShown=shown.length&&shown.every(i=>picked.has(i.id));
+  el.innerHTML='<div class="bulk-head"><strong role="status">'+(n?plural(n,'piece','pieces')+' selected':'Tap pieces to select them')+'</strong><div class="actions">'+(shown.length?'<button type="button" class="text-btn" id="pick-all">'+(allShown?'Unselect shown':'Select all shown')+'</button>':'')+(n?'<button type="button" class="text-btn" id="pick-none">Clear</button>':'')+'</div></div>'
+   +(n?'<div class="bulk-actions"><label class="field bulk-move"><span class="sr-only">Move selected pieces to category</span><select id="bulk-cat"><option value="" selected disabled>Move to category…</option>'+categories.map(c=>'<option>'+esc(c)+'</option>').join('')+'</select></label><button type="button" id="bulk-apply" disabled>Move</button><button type="button" id="bulk-review">Review</button><button type="button" id="bulk-delete" class="danger">Delete</button></div>':'');
+  on('#pick-all','click',()=>{if(allShown)shown.forEach(i=>picked.delete(i.id));else shown.forEach(i=>picked.add(i.id));draw()});
+  on('#pick-none','click',()=>{picked.clear();draw()});
+  on('#bulk-cat','change',e=>{$('#bulk-apply').disabled=!e.target.value});
+  on('#bulk-apply','click',async()=>{const cat=$('#bulk-cat').value;if(!cat)return;const ids=[...picked];await batch(ids.map(id=>({store:'items',record:{...items.find(i=>i.id===id),category:cat}})));await refresh();draw();render();notify('Moved '+plural(ids.length,'piece','pieces')+' to '+cat+'.')});
+  on('#bulk-review','click',()=>{const chosen=items.filter(i=>picked.has(i.id)).map(i=>({...i}));if(chosen.length)editItems(chosen,[],true)});
+  on('#bulk-delete','click',()=>askDelete([...picked],draw));
+ };
+ const draw=()=>{
+  const query=$('#item-search').value.toLowerCase().trim(),cat=$('#cat-filter').value;
+  shown=items.filter(i=>(cat==='All categories'||cat===i.category)&&[i.name,i.category,i.color,i.status,i.material,i.pattern].some(v=>String(v||'').toLowerCase().includes(query)));
+  const mode=$('#pick-mode');mode.setAttribute('aria-pressed',String(picking));mode.textContent=picking?'Done selecting':'Select';
+  $('#item-count').textContent=plural(shown.length,'piece','pieces');
+  const tile=i=>{const on=picked.has(i.id);return '<button type="button" class="tile'+(picking?' pickable':'')+(on?' picked':'')+'" '+(picking?'data-pick="'+i.id+'" aria-pressed="'+on+'"':'data-item="'+i.id+'"')+'>'+(picking?'<span class="tick" aria-hidden="true"></span>':'')+'<img alt="" src="'+esc(source(i.photos[0]))+'"><strong>'+esc(i.name)+'</strong><small>'+esc(i.category)+(i.status!=='available'?' · '+esc(i.status):'')+'</small></button>'};
+  $('#catalog').innerHTML=shown.length?shown.map(tile).join(''):'<div class="empty-note">'+(items.length?'No matching pieces.':'Add your first piece to start your closet.')+'</div>';
+  document.querySelectorAll('[data-item]').forEach(b=>b.onclick=wrap(()=>editItems([{...items.find(i=>i.id===b.dataset.item)}],[],true)));
+  document.querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>{const id=b.dataset.pick;picked.has(id)?picked.delete(id):picked.add(id);const on=picked.has(id);b.classList.toggle('picked',on);b.setAttribute('aria-pressed',String(on));bar()});
+  bar();
+ };
+ on('#pick-mode','click',()=>{picking=!picking;if(!picking)picked.clear();draw();$('#pick-mode').focus()});
  on('#item-search','input',draw);on('#cat-filter','change',draw);on('#add-item','click',uploadStart);draw();
 }
 const accepts='image/jpeg,image/png,image/webp,image/gif,image/avif,image/heic,image/heif,.heic,.heif';
@@ -200,18 +235,18 @@ function editItems(drafts,originals,editing,index=0,base=JSON.stringify(drafts))
  const d=drafts[index];const local=new Map(originals.map(o=>[o.id,o]));const viewUrls=[];
  const display=id=>{if(assets.has(id))return source(id);const blob=local.get(id)?.blob;if(!blob)return '';const url=URL.createObjectURL(blob);viewUrls.push(url);return url};
  const free=()=>{for(const u of viewUrls)URL.revokeObjectURL(u)};
- sheet(editing?'Edit piece':'Review '+(drafts.length>1?'piece '+(index+1)+' of '+drafts.length:'piece'),'<form id="edit-form" class="vstack"><div class="photo-strip">'+d.photos.map((id,n)=>'<div><img alt="Piece angle '+(n+1)+'" src="'+esc(display(id))+'">'+(d.photos.length>1?'<button type="button" class="text-btn" data-remove-angle="'+id+'">Remove</button>':'')+'</div>').join('')+'</div><details class="settings"><summary>More photos of this piece</summary><div><label class="field">Add angles<input type="file" id="more-angles" multiple accept="'+accepts+'"></label></div></details>'+(state.enabled?'<div class="actions"><button type="button" id="tag-photo">Suggest attributes with AI</button><span class="hint">Sends the first photo for analysis.</span></div>':'')+'<div id="tag-results" aria-live="polite"></div><label class="field">Item name<input name="name" maxlength="120" required value="'+esc(d.name)+'"></label><div class="grid2"><label class="field">Category<select name="category">'+options(categories,d.category)+'</select></label><label class="field">Status<select name="status">'+options(['available','laundry','unavailable','archived'],d.status)+'</select></label></div><details class="settings" '+(editing?'open':'')+'><summary>Attributes &amp; makeup details</summary><div class="grid2">'+attrs.map(([k,l])=>'<label class="field">'+l+'<input name="'+k+'" maxlength="500" value="'+esc(d[k])+'"></label>').join('')+'</div></details><p id="inline-error" role="alert" class="error"></p><div class="form-foot"><button class="primary">'+(index<drafts.length-1?'Review next piece':editing?'Save changes':drafts.length>1?'Add '+drafts.length+' pieces':'Add to closet')+'</button><button type="button" id="back-closet">Cancel</button>'+(editing?'<button type="button" id="delete-item" class="danger">Delete item</button>':'')+'</div></form>');
+ sheet(editing&&drafts.length===1?'Edit piece':'Review '+(drafts.length>1?'piece '+(index+1)+' of '+drafts.length:'piece'),'<form id="edit-form" class="vstack"><div class="photo-strip">'+d.photos.map((id,n)=>'<div><img alt="Piece angle '+(n+1)+'" src="'+esc(display(id))+'">'+(d.photos.length>1?'<button type="button" class="text-btn" data-remove-angle="'+id+'">Remove</button>':'')+'</div>').join('')+'</div><details class="settings"><summary>More photos of this piece</summary><div><label class="field">Add angles<input type="file" id="more-angles" multiple accept="'+accepts+'"></label></div></details>'+(state.enabled?'<div class="actions"><button type="button" id="tag-photo">Suggest attributes with AI</button><span class="hint">Sends the first photo for analysis.</span></div>':'')+'<div id="tag-results" aria-live="polite"></div><label class="field">Item name<input name="name" maxlength="120" required value="'+esc(d.name)+'"></label><div class="grid2"><label class="field">Category<select name="category">'+options(categories,d.category)+'</select></label><label class="field">Status<select name="status">'+options(['available','laundry','unavailable','archived'],d.status)+'</select></label></div><details class="settings" '+(editing?'open':'')+'><summary>Attributes &amp; makeup details</summary><div class="grid2">'+attrs.map(([k,l])=>'<label class="field">'+l+'<input name="'+k+'" maxlength="500" value="'+esc(d[k])+'"></label>').join('')+'</div></details><p id="inline-error" role="alert" class="error"></p><div class="form-foot"><button class="primary">'+(index<drafts.length-1?'Review next piece':editing?(drafts.length>1?'Save '+drafts.length+' pieces':'Save changes'):drafts.length>1?'Add '+drafts.length+' pieces':'Add to closet')+'</button><button type="button" id="back-closet">Cancel</button>'+(editing&&drafts.length===1?'<button type="button" id="delete-item" class="danger">Delete piece</button>':'')+'</div></form>');
  const seq=dialogSeq;
  $('#sheet').addEventListener('close',free,{once:true});
  const read=()=>Object.assign(d,Object.fromEntries(new FormData($('#edit-form'))));
  const again=()=>{free();editItems(drafts,originals,editing,index,base)};
  const count=drafts.length;
  guard={dirty:()=>{if(!$('#edit-form'))return false;read();return !editing||JSON.stringify(drafts)!==base},discard:free,
-  summary:()=>editing?'Your changes to this piece haven’t been saved.':count===1?'This piece and its photos haven’t been added to your closet.':'These '+count+' pieces and their photos haven’t been added to your closet.'};
+  summary:()=>editing?(count===1?'Your changes to this piece haven’t been saved.':'Your changes to these '+count+' pieces haven’t been saved.'):count===1?'This piece and its photos haven’t been added to your closet.':'These '+count+' pieces and their photos haven’t been added to your closet.'};
  document.querySelectorAll('[data-remove-angle]').forEach(b=>b.onclick=wrap(()=>{read();d.photos=d.photos.filter(p=>p!==b.dataset.removeAngle);again()}));
  on('#more-angles','change',async e=>{const files=[...e.target.files];read();const add=[];for(const [n,f] of files.entries()){notify('Preparing photo '+(n+1)+' of '+files.length+'…');add.push(await photoRecord(f))}if(seq!==dialogSeq)return;for(const r of add)if(!d.photos.includes(r.id)){d.photos=[...d.photos,r.id];originals.push(r)}again()});
  on('#back-closet','click',()=>requestClose(()=>{free();closet()}));
- on('#delete-item','click',async()=>{if(!confirm('Delete this item and its private photographs?'))return;guard=null;await remove('items',d.id);await collectAssets();await refresh();free();closet();render()});
+ on('#delete-item','click',()=>askDelete([d.id],()=>{free();closet()}));
  on('#tag-photo','click',async e=>{const btn=e.currentTarget;btn.disabled=true;btn.textContent='Analyzing photo…';try{
   const blob=local.get(d.photos[0])?.blob||await assetBlob(d.photos[0]);
   const {suggestions}=await request('tag',{image:await referenceJPEG(blob)});if(seq!==dialogSeq)return;if(!Array.isArray(suggestions)||!suggestions.length)throw Error('No clear item was detected. Enter its attributes manually.');
@@ -224,7 +259,7 @@ function editItems(drafts,originals,editing,index=0,base=JSON.stringify(drafts))
   const dbItems=await all('items');const seen=new Map(dbItems.filter(i=>!drafts.some(d=>d.id===i.id)).map(i=>[i.photos[0]+'|'+i.name.toLowerCase(),i.id]));
   for(const draft of drafts){const key=draft.photos[0]+'|'+draft.name.toLowerCase();if(seen.has(key))throw Error('A piece with this name and original photo already exists.');seen.set(key,draft.id)}
   const changes=[...originals.map(({id,blob})=>({store:'assets',record:{id,blob}})),...drafts.map(record=>({store:'items',record}))];
-  await batch(changes);guard=null;await collectAssets();await refresh();free();closet();render();notify(editing?'Closet updated.':'Added to your closet.');
+  await batch(changes);guard=null;await collectAssets();await refresh();free();closet();render();notify(editing?(drafts.length>1?'Saved '+drafts.length+' pieces.':'Closet updated.'):'Added to your closet.');
  });
 }
 function profile(){
