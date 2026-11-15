@@ -67,6 +67,28 @@ export function recentClothing(items,history) {
   const worn=new Set((Array.isArray(history)?history:[]).slice(0,3).flatMap(h=>Array.isArray(h?.itemIds)?h.itemIds:[]));
   return new Set(items.filter(i=>clothing.has(i.category)&&worn.has(i.id)).map(i=>i.id));
 }
+// Hair variety: each look gets a hairstyle direction, chosen at random from families not used in the last four looks.
+// Bolder families come in as the creativity setting rises; leaving the hair loose is one option among many.
+export const hairFamilies=[
+  {key:'loose',bold:1,text:'left loose and untouched, made deliberate with a sharp part, a tuck behind one ear, or flipped to one side'},
+  {key:'low-pony',bold:1,text:'a low ponytail, sleek or with the base wrapped in a strand of hair'},
+  {key:'nape-knot',bold:2,text:'a low knot or chignon at the nape'},
+  {key:'high-pony',bold:2,text:'a high, sleek ponytail with real lift at the crown'},
+  {key:'top-knot',bold:2,text:'a high top knot or a messy bun'},
+  {key:'half-up',bold:2,text:'a half-up shape that reads from the front: a half-up knot, half-up horns or a half-up pony'},
+  {key:'braid',bold:3,text:'a braid: a single plait, a side braid or a rope twist'},
+  {key:'pigtails',bold:3,text:'two low pigtails or twin braids'},
+  {key:'bubble',bold:4,text:'a bubble ponytail or bubble braid, sectioned with several hair ties'},
+  {key:'space-buns',bold:4,text:'two space buns or high twin knots'},
+  {key:'sculptural',bold:5,text:'a sculptural or asymmetric silhouette: a side ponytail, a looped tail, an off-center knot, or hair tied at intervals down its length'},
+];
+export function pickHair(history,creativity=8,random=Math.random) {
+  const recent=new Set((Array.isArray(history)?history:[]).slice(0,4).map(h=>h?.hair).filter(Boolean));
+  const maxBold=creativity>=8?5:creativity>=5?4:3;
+  let pool=hairFamilies.filter(f=>f.bold<=maxBold&&!recent.has(f.key));
+  if (!pool.length) pool=hairFamilies.filter(f=>f.bold<=maxBold);
+  return pool[Math.floor(random()*pool.length)];
+}
 function skinText(skin) {
   if (!skin||typeof skin!=='object') return null;
   const pick=k=>typeof skin[k]==='string'?skin[k].slice(0,200):'';
@@ -127,20 +149,21 @@ export async function perform(route, body, {env, fetchImpl, reserve}) {
     const toAliases=ids=>(Array.isArray(ids)?ids:[]).map(id=>alias.get(id)).filter(Boolean);
     const history=(Array.isArray(body.history)?body.history:[]).slice(0,25).map(h=>({title:h?.title,occasion:h?.occasion,rating:h?.rating,feedback:h?.feedback,pieces:toAliases(h?.itemIds)}));
     const hasMakeup=items.some(i=>i.category==='Makeup');
+    const hair=pickHair(body.history,Number(body.creativity??8));
     const context={occasion:body.occasion,context:body.context,preferences:body.preferences,feedbackAndHistory:history,
       creativity:body.creativity??8,appearance:skinText(body.skin),items:shuffled.map(item=>({...metadata(item,alias.get(item.id)),...(recentIds.has(item.id)?{wornInRecentLooks:true}:{})}))};
     const json=JSON.stringify(context);
     if (json.length>600_000) invalid('The styling context is too large. Shorten descriptions or history.');
     const instructions=persona(body.sass)+' Select ONE complete wearable look using only item IDs exactly as listed in items (p1, p2 and so on). Include shoes and a one-piece or a top and bottom. Limit to twelve items total. Never treat a full-look reference as owned clothing. Use each item\'s description, colors and shades to judge fit, proportion and color.'
       +(hasMakeup?' Makeup is part of every look: include one to three makeup items from items (at least one eye or lip product), chosen to flatter the skin in appearance and to harmonize with the outfit\'s colors. In makeupPlan give one entry per shade you use: itemId, the shade name from that item\'s shades (or a short description), its hex, the area (lids, crease, outer corner, lower lash line, waterline, inner corner, lips, cheeks, face) and how to apply it. Write makeup as clear step-by-step directions that match makeupPlan.':' There is no makeup inventory: leave makeupPlan empty and describe a simple no-product look.')
-      +' Hair is part of every look and a place to experiment: in hair give the style a short name and clear steps. It must be achievable with the owner\'s own hair as described in appearance (length, color, texture; never change the color or length, never add extensions) using only hair ties, which the owner has, plus any hair accessories you choose from items (include their IDs). No heat tools, pins or products. Match the boldness to the creativity level: braids, twists, knots, buns, half-up shapes, multiple ponytails, bubble ponytails, face-framing pieces, parts and tucks. Make the hair work with the neckline, collar, earrings and the mood of the outfit.'
+      +' Hair is part of every look and a place to experiment. The hairstyle direction for this look is '+hair.text+'. Build on that direction so it suits this outfit, unless it is impossible with the owner\'s hair, in which case choose a clearly different family and say why. In hair give the style a short name and clear steps. It must be achievable with the owner\'s own hair as described in appearance (length, color, texture; never change the color or length, never add extensions) using only hair ties, which the owner has, plus any hair accessories you choose from items (include their IDs). No heat tools, pins or products. Prefer a silhouette that reads clearly from the front in a full-length photo, and make the hair work with the neckline, collar, earrings and mood of the outfit.'
       +' Give specific styling and brief reasoning. Push this alternative dresser with thoughtful proportion, unexpected layering, texture, color or makeup at their desired creativity level. Adapt to activity, context, mobility, weather, dress code and observed preferences. Use rating context without reading one negative rating as a general preference for safe styling. If substituting an unsuitable piece, explain the choice. Do not name new products. Favor variety: build something genuinely different from the recent looks in feedbackAndHistory and favor pieces not used lately. Clothing marked wornInRecentLooks may be used again only when it clearly pushes this look\'s style further, at most one such piece, and say why in reasoning. Shoes, bags, jewelry and makeup may repeat freely.';
     const resolve=raw=>{
       const ids=[],unknown=[];
       for (const x of Array.isArray(raw?.itemIds)?raw.itemIds:[]) { const id=real.get(String(x).trim())||(alias.has(x)?x:null); if (!id) unknown.push(String(x)); else if (!ids.includes(id)) ids.push(id); }
       const plan=(Array.isArray(raw?.makeupPlan)?raw.makeupPlan:[]).map(step=>({...step,itemId:real.get(String(step?.itemId).trim())||(alias.has(step?.itemId)?step.itemId:'')})).filter(step=>step.itemId);
       for (const step of plan) if (!ids.includes(step.itemId)&&ids.length<12) ids.push(step.itemId);
-      return {look:{...raw,itemIds:ids.slice(0,12),makeupPlan:plan},unknown};
+      return {look:{...raw,itemIds:ids.slice(0,12),makeupPlan:plan,hair:raw?.hair?{style:String(raw.hair.style||''),steps:String(raw.hair.steps||''),family:hair.key}:null},unknown};
     };
     let {look,unknown}=resolve(await structured('outfit',lookSchema,instructions,[{type:'input_text',text:json}]));
     const ok=l=>{try{validateLook(l,items);return true}catch{return false}};
@@ -169,7 +192,7 @@ export async function perform(route, body, {env, fetchImpl, reserve}) {
     const plan=(Array.isArray(body.look.makeupPlan)?body.look.makeupPlan:[]).slice(0,12).map(step=>({area:String(step?.area||'').slice(0,40),shade:String(step?.shade||'').slice(0,60),...(hexOk(step?.hex)?{hex:step.hex}:{}),application:String(step?.application||'').slice(0,200)}));
     const prompt=['Produce a photorealistic full-length portrait of the same person as the first '+appearance.length+' reference photo(s), wearing every selected item. Match facial appearance, natural proportions and natural skin tone'+(skin?.hex?' (about '+skin.hex+')':'')+'; do not lighten or darken the skin. Neutral studio background, natural daylight, realistic drape, shoes in frame. Preserve garment shape, length, fit, pattern, colors, logos and construction. Do not add, substitute or invent pieces. Other images map to the following inventory items in order:',...labels,
       plan.length?'Makeup must be clearly visible and accurate to these shades; the face is close enough to see it: '+JSON.stringify(plan)+(makeupItems.length?' (products: '+makeupItems.map(i=>i.name).join(', ')+')':''):'Makeup: '+String(body.look.makeup||'natural, minimal').slice(0,600),
-      ...(body.look.hair?.style?['Hairstyle, rendered realistically on the person\'s own hair'+(skin?.hairLength||skin?.hairColor?' ('+[skin.hairLength,skin.hairColor,skin.hairTexture].filter(Boolean).join(', ')+'; keep that length and color)':'')+': '+JSON.stringify({style:String(body.look.hair.style).slice(0,80),steps:String(body.look.hair.steps||'').slice(0,600)})]:[]),
+      ...(body.look.hair?.style?['Hairstyle: an essential part of this look and must be clearly visible exactly as described, not left as default loose hair unless it says loose. Render it realistically on the person\'s own hair'+(skin?.hairLength||skin?.hairColor?' ('+[skin.hairLength,skin.hairColor,skin.hairTexture].filter(Boolean).join(', ')+'; keep that length and color)':'')+': '+JSON.stringify({style:String(body.look.hair.style).slice(0,80),steps:String(body.look.hair.steps||'').slice(0,600)})]:[]),
       'Styling directions, as reference data:',JSON.stringify({styling:body.look.styling})].join('\n');
     const form=new FormData();
     for (const [key,value] of Object.entries({model,prompt,size:'1024x1536',quality:'medium',output_format:'jpeg',n:'1'})) form.append(key,value);

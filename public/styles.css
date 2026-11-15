@@ -399,3 +399,30 @@ fieldset.choice input{accent-color:var(--oxblood);width:16px;height:16px;margin:
 .editor>*,#look-col,.look-card,.look-card details{min-width:0}
 .lb .studio-head{flex-wrap:wrap;align-items:baseline;column-gap:20px}
 @media(max-width:650px){.lb-stage{--w:min(58vw,44vh)}.lb-slide{transform:translateX(calc(-50% + var(--d)*72%)) scale(calc(1 - var(--a)*.18))}.lb .studio-head h1{font-size:clamp(46px,13vw,70px)}}
+
+/* Never scroll sideways */
+html,body{overflow-x:clip;max-width:100%}
+/* Page titles: smaller, so the content shows */
+.studio-head h1{font-size:clamp(38px,4.6vw,66px)}
+.studio-head{margin-bottom:22px}
+@media(max-width:650px){.lb .studio-head h1{font-size:clamp(36px,10vw,52px)}}
+/* Lookbook: the caption sits below the carousel; arrows stay put when pressed */
+.lb-stage{height:calc(var(--w)*1.5 + 24px)}
+.lb-caption{text-align:center;min-height:68px;margin:14px auto 4px;max-width:min(640px,100%);padding:0 8px}
+.lb-caption strong{display:block;font:700 clamp(19px,2.1vw,25px)/1.15 var(--display);color:var(--oxblood);overflow-wrap:anywhere}
+.lb-caption small{display:block;margin-top:6px;font:700 11px/1 var(--ui);font-stretch:70%;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+.lb-arrow,.lb-arrow:active:not(:disabled){transform:none}
+.lb-arrow{top:calc(var(--w)*.75 + 6px - 24px)}
+@media(max-width:650px){.lb-arrow{top:calc(var(--w)*.75 + 6px - 20px)}}
+/* The whole look, opened from the Lookbook */
+.lb-look-img{width:100%;max-height:70dvh;object-fit:contain;background:var(--tint);border:1px solid var(--oxblood)}
+.lb-look>section{display:grid;gap:8px}
+/* Arrows between details, and between looks */
+.area-nav{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.area-step{width:44px;height:44px;min-height:0;padding:0;border-radius:50%;font:400 26px/1 var(--ui);letter-spacing:0;display:grid;place-items:center}
+.area-step:active:not(:disabled){transform:none}
+.area-step:disabled{opacity:.3;cursor:default}
+.area-back{justify-self:start}
+.sheet-nav,.lb-look-nav{position:sticky;top:calc(var(--sheet-head,64px) - 1px);z-index:3;background:var(--blush);padding:8px 0;display:grid;gap:6px}
+.lb-look-nav{display:flex}
+.area-sheet:focus{outline:none}

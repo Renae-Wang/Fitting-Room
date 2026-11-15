@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {once} from 'node:events';
 import {get} from 'node:http';
 import {makeServer} from '../server.mjs';
-import {perform,validateLook,recentClothing} from '../supabase/functions/_shared/provider.mjs';
+import {perform,validateLook,recentClothing,pickHair,hairFamilies} from '../supabase/functions/_shared/provider.mjs';
 
 const items=[{id:'dress',category:'Dresses / One-pieces',name:'Satin slip',status:'available'},{id:'shoes',category:'Shoes',name:'Black boots',status:'available'}];
 const look={title:'Hard gloss',itemIds:['dress','shoes'],styling:'Layer the slip over the boots.',makeup:'No product.',makeupPlan:[],reasoning:'Contrasting textures.'};
@@ -219,4 +219,17 @@ test('skin tone and hair come from the owner\'s photos, for makeup and hairstyle
   assert.equal(sent.input[0].content.length,2,'headshot and full-body photo, so hair length is visible');
   assert.equal(sent.text.format.name,'skin_tone');
   assert.match(sent.instructions,/Do not infer ethnicity/);
+});
+
+test('hairstyles vary: a direction is picked from families not used in the last four looks, bolder with more creativity',async()=>{
+  const seq=v=>()=>v;
+  const recent=[{hair:'loose'},{hair:'half-up'},{hair:'top-knot'},{hair:'braid'},{hair:'pigtails'}];
+  for (let r=0;r<1;r+=0.05) { const f=pickHair(recent,8,seq(r)); assert.ok(!['loose','half-up','top-knot','braid'].includes(f.key),f.key); }
+  assert.ok(Array.from({length:40},(_,i)=>pickHair([],3,seq(i/40))).every(f=>f.bold<=3),'calm creativity keeps it wearable');
+  assert.ok(new Set(Array.from({length:40},(_,i)=>pickHair([],10,seq(i/40)).key)).size===hairFamilies.length,'every family is possible at high creativity, including leaving it loose');
+  let sent;
+  const out=await perform('select',{items,history:recent,creativity:9},adapter(async(url,init)=>{sent=JSON.parse(init.body);const c=JSON.parse(sent.input[0].content[0].text);const idOf=Object.fromEntries(c.items.map(i=>[i.name,i.id]));return modelResult({...look,itemIds:[idOf['Satin slip'],idOf['Black boots']],hair:{style:'Space buns',steps:'Two high buns.'}})}));
+  const family=hairFamilies.find(f=>sent.instructions.includes('The hairstyle direction for this look is '+f.text));
+  assert.ok(family&&!['loose','half-up','top-knot','braid'].includes(family.key));
+  assert.equal(out.hair.family,family.key,'the family is saved with the look so the next one can avoid it');
 });

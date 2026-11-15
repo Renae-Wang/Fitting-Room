@@ -30,10 +30,10 @@ async function setting(id,value){settings[id]=value;await put('settings',{id,val
 const publicItem=({photos,intake,nameLocked,categoryLocked,created,...item})=>item;
 function context(){const p=pref();return {wardrobe:items.filter(i=>!i.intake).map(publicItem),outfit:current()?lookFields(current()):null,preferences:{style:p.style,creativity:p.creativity},occasion:p.occasion,context:p.context,sass:p.sass,feedback:historyFields()}}
 function lookFields(l){return {id:l.id,title:l.title,itemIds:l.itemIds,styling:l.styling,makeup:l.makeup,makeupPlan:l.makeupPlan||[],hair:l.hair||null,reasoning:l.reasoning,occasion:l.occasion}}
-function historyFields(){return looks.slice(0,25).map(l=>({title:l.title,itemIds:l.itemIds,rating:l.rating,feedback:l.feedback,occasion:l.occasion}))}
+function historyFields(){return looks.slice(0,25).map(l=>({title:l.title,itemIds:l.itemIds,rating:l.rating,feedback:l.feedback,occasion:l.occasion,hair:l.hair?.family||null}))}
 const request=(path,body)=>api(path,body);
 async function status(){try{state=await request('status')}catch{state={enabled:false}}}
-function sheet(title,markup){guard=null;redrawCloset=null;dialogSeq++;$('#sheet-title').textContent=title;$('#sheet-body').innerHTML=markup;const d=$('#sheet');if(!d.open)d.showModal();d.scrollTop=0}
+function sheet(title,markup){guard=null;redrawCloset=null;dialogSeq++;$('#sheet-title').textContent=title;$('#sheet-body').innerHTML=markup;const d=$('#sheet');if(!d.open)d.showModal();d.scrollTop=0;d.style.setProperty('--sheet-head',d.querySelector('.dialog-head').offsetHeight+'px')}
 function close(){if($('#sheet').open)$('#sheet').close()}
 // Every way out of a sheet goes through requestClose, so unsaved upload work is never lost by accident.
 function requestClose(proceed=close){if(guard?.dirty()){askDiscard(guard.summary?.()||'',()=>{const g=guard;guard=null;g?.discard?.();proceed()});return}guard=null;proceed()}
@@ -211,8 +211,8 @@ async function mapLook(id){
  finally{locating.delete(id);if(active===id&&!busy&&ready)refreshLook()}
 }
 // Magnified crop of the existing image plus notes and closet photos. Local only: no generation.
-function openArea(key,spot){
- const l=current();if(!l?.image)return;const area=lookAreas(l,items).find(a=>a.key===key);if(!area)return;
+function openArea(key,spot,l=current(),back=null){
+ if(!l?.image)return;const all=lookAreas(l,items),at=all.findIndex(a=>a.key===key),area=all[at];if(!area)return;
  const regions=l.hotspots?.regions||{},aspect=l.hotspots?.aspect||2/3,keys=(key==='hands'?['handR','handL']:[key]).filter(k=>regions[k]);
  if(spot)keys.sort((a,b)=>(b===spot)-(a===spot));
  const crops=keys.map(k=>{const c=cropStyle(regions[k],aspect);return '<figure class="crop-fig"><div class="crop" role="img" aria-label="Magnified view of '+esc(SPOT_LABELS[k].toLowerCase())+'" style="aspect-ratio:'+c.ratio+';width:min(100%,calc(52dvh * '+c.ratio+'));background-image:url(&quot;'+esc(l.image)+'&quot;);background-size:'+c.size+';background-position:'+c.position+'"></div>'+(keys.length>1?'<figcaption class="micro">'+esc(SPOT_LABELS[k])+'</figcaption>':'')+'</figure>'}).join('');
@@ -221,7 +221,13 @@ function openArea(key,spot){
  const pieces=area.items.length?'<section class="area-part"><h3 class="section-label">From your closet</h3><p class="hint">Selected for this look. The render may not show every piece clearly.</p><div class="piece-list">'+area.items.map(i=>'<div class="piece"><img src="'+esc(source(i.photos?.[0]))+'" alt="Original photo of '+esc(i.name)+'"><div><strong>'+esc(i.name)+'</strong><span class="pill">Selected</span><small>'+esc(i.category)+'</small></div></div>').join('')+'</div></section>':'';
  const shades=key==='face'&&swatches(l)?'<section class="area-part"><h3 class="section-label">Shades</h3>'+swatches(l)+'</section>':'';
  const hair=key==='face'&&l.hair?.style?'<section class="area-part"><h3 class="section-label">Hair · '+esc(l.hair.style)+'</h3><p>'+esc(l.hair.steps||'')+'</p></section>':'';
- sheet(area.title,'<div class="vstack area-sheet">'+view+hair+shades+notes+pieces+'</div>');
+ const step=d=>all[(at+d+all.length)%all.length];
+ const nav=all.length>1?'<nav class="area-nav" aria-label="Details of this look"><button type="button" class="area-step" data-area-step="-1" aria-label="Previous: '+esc(step(-1).title)+'">‹</button><span class="hint">'+(at+1)+' of '+all.length+'</span><button type="button" class="area-step" data-area-step="1" aria-label="Next: '+esc(step(1).title)+'">›</button></nav>':'';
+ sheet(area.title,'<div class="vstack area-sheet" tabindex="-1">'+(back||nav?'<div class="sheet-nav">'+(back?'<button type="button" class="text-btn area-back">‹ Back to the look</button>':'')+nav+'</div>':'')+view+hair+shades+notes+pieces+'</div>');
+ const go=d=>openArea(step(d).key,null,l,back);
+ document.querySelectorAll('[data-area-step]').forEach(b=>b.onclick=()=>{go(Number(b.dataset.areaStep));$('[data-area-step="'+b.dataset.areaStep+'"]')?.focus()});
+ $('.area-sheet').onkeydown=e=>{if(e.target.closest('input,textarea,select'))return;if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();go(e.key==='ArrowLeft'?-1:1);$('.area-sheet')?.focus()}};
+ on('.area-back','click',back);
 }
 function render(){
  if(!ready)return;
@@ -284,8 +290,24 @@ let lbIndex=0;
 const lookDate=l=>new Date(l.created||Date.now()).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
 function openLook(id){active=id;detailsOn=false;renderError=null;setting('activeLook',id);location.hash='#studio'}
 function deleteLook(id,after){askConfirm({title:'Delete this look?',body:'Its preview, notes and rating are removed. Your closet pieces stay. This can’t be undone.',keep:'Keep look',act:'Delete look'},wrap(async()=>{if(reader?.lookId===id)stopReader();await remove('looks',id);await collectAssets();await refresh();if(active===id){active=looks[0]?.id||'';await setting('activeLook',active)}after()}))}
-function closeUp(l){
- sheet(l.title,'<div class="vstack lb-close">'+(l.image?'<img src="'+esc(l.image)+'" alt="'+esc(l.title)+'">':'<div class="empty-note">This look has no image yet.</div>')+'<p class="hint">'+esc(lookDate(l))+' · '+esc(l.occasion||'')+(l.wornOn?' · '+esc(wornLabel(l.wornOn)):'')+(l.rating?' · '+l.rating+'/5':'')+'</p><div class="actions"><button type="button" class="primary" id="lb-open">Open in Studio</button></div></div>');
+let lbGo=null;
+function closeUp(i){
+ const l=looks[i];if(!l)return;lbGo?.(i);
+ if(l.image&&!l.hotspots)mapLook(l.id).then(()=>{if($('#sheet').open&&$('.lb-look')?.dataset.look===l.id)closeUp(looks.findIndex(x=>x.id===l.id))});
+ const areas=l.image?lookAreas(l,items):[];
+ const pieces=l.itemIds.map(id=>{const it=items.find(x=>x.id===id);return it?'<div class="item-chip" role="listitem"><img src="'+esc(source(it.photos[0]))+'" alt=""><span>'+esc(it.name)+'</span></div>':'<div class="item-chip gone" role="listitem"><span class="hint">Deleted closet item</span></div>'}).join('');
+ const para=t=>String(t||'').trim()?'<p>'+esc(t)+'</p>':'';
+ sheet(l.title,'<div class="vstack lb-look" data-look="'+esc(l.id)+'">'
+  +'<nav class="area-nav lb-look-nav" aria-label="Looks"><button type="button" class="area-step" data-look-step="-1" aria-label="Previous look" '+(i===0?'disabled':'')+'>‹</button><span class="hint">'+esc(lookDate(l))+' · '+(i+1)+' of '+looks.length+'</span><button type="button" class="area-step" data-look-step="1" aria-label="Next look" '+(i===looks.length-1?'disabled':'')+'>›</button></nav>'
+  +(l.image?'<img class="lb-look-img" src="'+esc(l.image)+'" alt="'+esc(l.title)+'">':'<div class="empty-note">This look has no image yet.</div>')
+  +'<p class="hint">'+esc(l.occasion||'')+(l.wornOn?' · '+esc(wornLabel(l.wornOn)):'')+(l.rating?' · rated '+l.rating+'/5':'')+'</p>'
+  +'<section><h3 class="section-label">Pieces · '+l.itemIds.length+'</h3><div class="item-strip" role="list" aria-label="Pieces in this look">'+pieces+'</div></section>'
+  +(areas.length?'<section><h3 class="section-label">Details</h3><div class="actions">'+areas.map(a=>'<button type="button" data-area-open="'+a.key+'">'+esc(a.title)+'</button>').join('')+'</div></section>':'')
+  +'<details class="settings"><summary>Why this look</summary><div>'+para(l.reasoning)+'</div></details>'
+  +'<details class="settings"><summary>'+(l.hair?.style?'Styling, hair &amp; makeup':'Styling &amp; makeup')+'</summary><div>'+swatches(l)+para(l.styling)+para(hairLine(l))+para(l.makeup)+'</div></details>'
+  +'<div class="actions"><button type="button" class="primary" id="lb-open">Open in Studio</button></div></div>');
+ document.querySelectorAll('[data-look-step]').forEach(b=>b.onclick=()=>{closeUp(i+Number(b.dataset.lookStep));$('[data-look-step="'+b.dataset.lookStep+'"]:not(:disabled)')?.focus()});
+ document.querySelectorAll('[data-area-open]').forEach(b=>b.onclick=()=>openArea(b.dataset.areaOpen,null,looks.find(x=>x.id===l.id)||l,()=>closeUp(looks.findIndex(x=>x.id===l.id))));
  on('#lb-open','click',()=>{close();openLook(l.id)});
 }
 function lookbookPage(){
@@ -296,8 +318,8 @@ function lookbookPage(){
  const pic=(l,eager)=>l.image?'<img src="'+esc(l.image)+'" alt="" draggable="false"'+(eager?'':' loading="lazy"')+'>':'<span class="lb-blank">No image yet</span>';
  root.innerHTML='<section class="lb">'+head
   +'<div class="lb-stage" role="region" aria-roledescription="carousel" aria-label="Your looks"><button type="button" class="lb-arrow prev" aria-label="Previous look">‹</button><div class="lb-track">'
-  +list.map((l,i)=>'<figure class="lb-slide" data-i="'+i+'" role="group" aria-roledescription="slide" aria-label="'+(i+1)+' of '+list.length+'"><button type="button" class="lb-pic" aria-label="'+esc(l.title)+', '+esc(lookDate(l))+'. Open close-up">'+pic(l,Math.abs(i-lbIndex)<3)+'</button><figcaption><strong>'+esc(l.title)+'</strong><small>'+esc(lookDate(l))+'</small></figcaption></figure>').join('')
-  +'</div><button type="button" class="lb-arrow next" aria-label="Next look">›</button></div>'
+  +list.map((l,i)=>'<figure class="lb-slide" data-i="'+i+'" role="group" aria-roledescription="slide" aria-label="'+(i+1)+' of '+list.length+'"><button type="button" class="lb-pic" aria-label="'+esc(l.title)+', '+esc(lookDate(l))+'. Open this look">'+pic(l,Math.abs(i-lbIndex)<3)+'</button></figure>').join('')
+  +'</div><button type="button" class="lb-arrow next" aria-label="Next look">›</button></div><div class="lb-caption"><strong id="lb-title"></strong><small id="lb-date"></small></div>'
   +'<div class="lb-actions actions"><button type="button" class="primary" id="lb-studio">Open in Studio</button><button type="button" id="lb-delete" class="text-btn">Delete look</button></div>'
   +'<h2 class="section-label lb-all">All looks</h2><div class="lb-grid">'+list.map((l,i)=>'<button type="button" class="lb-card" data-go="'+i+'" data-look="'+esc(l.id)+'">'+pic(l)+'<strong>'+esc(l.title)+'</strong><small>'+esc(lookDate(l))+'</small></button>').join('')+'</div></section>';
  const slides=[...root.querySelectorAll('.lb-slide')],stage=root.querySelector('.lb-stage');
@@ -308,10 +330,11 @@ function lookbookPage(){
    el.querySelector('.lb-pic').tabIndex=a===0?0:-1;});
   root.querySelector('.lb-arrow.prev').disabled=lbIndex===0;root.querySelector('.lb-arrow.next').disabled=lbIndex===list.length-1;
   root.querySelectorAll('.lb-card').forEach((c,i)=>c.classList.toggle('current',i===lbIndex));
+  $('#lb-title').textContent=list[lbIndex].title;$('#lb-date').textContent=lookDate(list[lbIndex]);
   live(list[lbIndex].title+', '+lookDate(list[lbIndex]));
  };
  const go=i=>{lbIndex=Math.max(0,Math.min(i,list.length-1));place()};
- slides.forEach((el,i)=>el.querySelector('.lb-pic').onclick=()=>{if(i===lbIndex)closeUp(list[i]);else go(i)});
+ slides.forEach((el,i)=>el.querySelector('.lb-pic').onclick=()=>{if(i===lbIndex)closeUp(i);else go(i)});lbGo=go;
  root.querySelector('.lb-arrow.prev').onclick=()=>go(lbIndex-1);root.querySelector('.lb-arrow.next').onclick=()=>go(lbIndex+1);
  stage.onkeydown=e=>{if(e.key==='ArrowLeft'){e.preventDefault();go(lbIndex-1);root.querySelector('.lb-slide.focus .lb-pic').focus()}if(e.key==='ArrowRight'){e.preventDefault();go(lbIndex+1);root.querySelector('.lb-slide.focus .lb-pic').focus()}};
  let x0=null;stage.onpointerdown=e=>{x0=e.clientX};stage.onpointerup=e=>{if(x0===null)return;const dx=e.clientX-x0;x0=null;if(Math.abs(dx)>40){go(lbIndex+(dx<0?1:-1));e.preventDefault()}};
