@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {once} from 'node:events';
 import {get} from 'node:http';
 import {makeServer} from '../server.mjs';
-import {perform,validateLook,freshPieces} from '../supabase/functions/_shared/provider.mjs';
+import {perform,validateLook,recentClothing} from '../supabase/functions/_shared/provider.mjs';
 
 const items=[{id:'dress',category:'Dresses / One-pieces',name:'Satin slip',status:'available'},{id:'shoes',category:'Shoes',name:'Black boots',status:'available'}];
 const look={title:'Hard gloss',itemIds:['dress','shoes'],styling:'Layer the slip over the boots.',makeup:'No product.',makeupPlan:[],reasoning:'Contrasting textures.'};
@@ -63,7 +63,7 @@ test('makeup is part of every look when there is makeup: a shade plan with hex, 
   }));
   const {ctx}=aliasesIn(payload);
   assert.match(payload.instructions,/Makeup is part of every look/);
-  assert.equal(ctx.skinTone.hex,'#C99A7E');
+  assert.equal(ctx.appearance.hex,'#C99A7E');
   assert.equal(ctx.items.find(i=>i.name==='Gold palette').shades[0].hex,'#C8913A');
   assert.deepEqual(out.itemIds,['dress','shoes','pal'],'a makeup item used in the plan joins the look');
   assert.equal(out.makeupPlan[0].itemId,'pal');
@@ -152,33 +152,45 @@ test('read-aloud makes one counted speech call, times the words, and survives a 
   await assert.rejects(perform('speak',{text:'x'},{env,fetchImpl:async()=>new Response('',{status:429}),reserve(){}}),/429/);
 });
 
-test('variety is enforced: recent clothing and the last shoes and bag are left out, unless that leaves no complete outfit',async()=>{
+test('variety: recent clothing may return once when it pushes the style; a near-repeat is sent back; shoes repeat freely',async()=>{
   const closet=[...Array.from({length:6},(_,i)=>({id:'top'+i,category:'Tops',name:'top '+i,status:'available'})),...Array.from({length:6},(_,i)=>({id:'bot'+i,category:'Bottoms',name:'bottom '+i,status:'available'})),
-    {id:'docs',category:'Shoes',name:'docs',status:'available'},{id:'vans',category:'Shoes',name:'vans',status:'available'},{id:'tote',category:'Bags',name:'tote',status:'available'},{id:'hoops',category:'Jewelry',name:'hoops',status:'available'}];
-  const history=[{itemIds:['top1','bot1','docs','tote','hoops']},{itemIds:['top2','bot2','docs']},{itemIds:['top3','bot1']},{itemIds:['top4']}];
-  const offered=freshPieces(closet,history).map(i=>i.id);
-  for (const id of ['top1','top2','top3','bot1','bot2','docs','tote']) assert.ok(!offered.includes(id),id+' is left out');
-  for (const id of ['top4','top0','bot0','vans','hoops']) assert.ok(offered.includes(id),id+' is still offered');
-  // Only one pair of shoes: they come back rather than making an outfit impossible.
-  assert.ok(freshPieces(closet.filter(i=>i.id!=='vans'),history).some(i=>i.id==='docs'));
-  // Every top worn recently: fall back to the whole closet.
-  assert.equal(freshPieces(closet.filter(i=>['top1','bot0','vans'].includes(i.id)),history).length,3);
-  const orders=new Set();let sent;
-  for(let n=0;n<4;n++){
-    await perform('select',{items:closet,occasion:'Everyday',history},adapter(async(url,init)=>{
-      sent=JSON.parse(init.body);const ctx=JSON.parse(sent.input[0].content[0].text);
-      const idOf=Object.fromEntries(ctx.items.map(i=>[i.name,i.id]));orders.add(ctx.items.map(i=>i.name).join());
-      assert.ok(!ctx.items.some(i=>['top 1','bottom 1','docs'].includes(i.name)),'the stylist never sees recent pieces');
-      return modelResult({...look,itemIds:[idOf['top 0'],idOf['bottom 0'],idOf['vans']]});
-    }));
-  }
-  assert.ok(orders.size>1,'the order changes between requests');
-  assert.match(sent.instructions,/Favor variety/);
-  // A recent piece slipped in by the model is rejected, then repaired.
-  let calls=0;
-  const out=await perform('select',{items:closet,history},adapter(async(url,init)=>{calls++;const ctx=JSON.parse(JSON.parse(init.body).input[0].content[0].text);const idOf=Object.fromEntries(ctx.items.map(i=>[i.name,i.id]));
-    return modelResult({...look,itemIds:calls===1?['top1',idOf['bottom 0'],idOf['vans']]:[idOf['top 0'],idOf['bottom 0'],idOf['vans']]})}));
-  assert.equal(calls,2);assert.deepEqual(out.itemIds,['top0','bot0','vans']);
+    {id:'docs',category:'Shoes',name:'docs',status:'available'},{id:'vans',category:'Shoes',name:'vans',status:'available'},{id:'tote',category:'Bags',name:'tote',status:'available'}];
+  const history=[{itemIds:['top1','bot1','docs','tote']},{itemIds:['top2','bot2','docs']},{itemIds:['top3','bot1']},{itemIds:['top4']}];
+  assert.deepEqual([...recentClothing(closet,history)].sort(),['bot1','bot2','top1','top2','top3'],'clothing from the last three looks only; not shoes or bags');
+  const pick=(ctx,names)=>{const idOf=Object.fromEntries(ctx.items.map(i=>[i.name,i.id]));return names.map(n=>idOf[n])};
+  // Every piece is still offered, recent clothing is marked, and one reused piece plus repeated shoes is fine.
+  let calls=0,ctx,sent;
+  const one=await perform('select',{items:closet,history},adapter(async(url,init)=>{calls++;sent=JSON.parse(init.body);ctx=JSON.parse(sent.input[0].content[0].text);return modelResult({...look,itemIds:pick(ctx,['top 1','bottom 0','docs','tote'])})}));
+  assert.equal(calls,1);assert.equal(ctx.items.length,15,'nothing is hidden from the stylist');
+  assert.deepEqual(ctx.items.filter(i=>i.wornInRecentLooks).map(i=>i.name).sort(),['bottom 1','bottom 2','top 1','top 2','top 3']);
+  assert.deepEqual(one.itemIds,['top1','bot0','docs','tote']);
+  assert.match(sent.instructions,/at most one such piece/);assert.match(sent.instructions,/Shoes, bags, jewelry and makeup may repeat freely/);
+  // Two reused clothing pieces is too close to a recent look: one repair.
+  calls=0;let second;
+  const two=await perform('select',{items:closet,history},adapter(async(url,init)=>{calls++;const body=JSON.parse(init.body);const c=JSON.parse(body.input[0].content[0].text);if(calls===2)second=body;
+    return modelResult({...look,itemIds:pick(c,calls===1?['top 1','bottom 1','docs']:['top 0','bottom 1','docs'])})}));
+  assert.equal(calls,2);assert.deepEqual(two.itemIds,['top0','bot1','docs']);assert.match(second.input[0].content[1].text,/too close to a recent look/);
+  // If the second try is unusable, the first valid look is kept: variety never blocks a look.
+  calls=0;
+  const kept=await perform('select',{items:closet,history},adapter(async(url,init)=>{calls++;const c=JSON.parse(JSON.parse(init.body).input[0].content[0].text);
+    return modelResult({...look,itemIds:calls===1?pick(c,['top 1','bottom 1','docs']):['nope']})}));
+  assert.deepEqual(kept.itemIds,['top1','bot1','docs']);
+  // The order still changes between requests.
+  const orders=new Set();
+  for(let n=0;n<4;n++)await perform('select',{items:closet},adapter(async(url,init)=>{const c=JSON.parse(JSON.parse(init.body).input[0].content[0].text);orders.add(c.items.map(i=>i.name).join());return modelResult({...look,itemIds:pick(c,['top 0','bottom 0','vans'])})}));
+  assert.ok(orders.size>1);
+});
+test('every look plans a hairstyle that fits the owner\'s hair, with hair ties only, and the render follows it',async()=>{
+  let sent;
+  const skin={depth:'light-medium',undertone:'warm',hex:'#C99A7E',notes:'',hairLength:'mid-back, long layers',hairColor:'dark brown',hairTexture:'wavy, thick'};
+  await perform('select',{items,skin},adapter(async(url,init)=>{sent=JSON.parse(init.body);const c=JSON.parse(sent.input[0].content[0].text);const idOf=Object.fromEntries(c.items.map(i=>[i.name,i.id]));return modelResult({...look,itemIds:[idOf['Satin slip'],idOf['Black boots']],hair:{style:'Bubble ponytail',steps:'Tie a high ponytail, add ties every few inches.'}})}));
+  const c=JSON.parse(sent.input[0].content[0].text);
+  assert.equal(c.appearance.hairLength,'mid-back, long layers');assert.equal(c.appearance.hairColor,'dark brown');
+  assert.match(sent.instructions,/only hair ties/);assert.match(sent.instructions,/never change the color or length/);
+  assert.deepEqual(sent.text.format.schema.properties.hair.required,['style','steps']);
+  let form;
+  await perform('image',{items:items.map(x=>({...x,image:photo})),look:{...look,hair:{style:'Bubble ponytail',steps:'Tie it high.'}},appearance:[photo],skin},adapter(async(url,init)=>{form=init.body;return Response.json({data:[{b64_json:'AAAA'}]})}));
+  assert.match(form.get('prompt'),/Bubble ponytail/);assert.match(form.get('prompt'),/mid-back, long layers, dark brown/);
 });
 test('tagging can name the piece a photo is for, as data rather than instructions',async()=>{
   let sent;
@@ -200,10 +212,11 @@ test('rendering describes makeup by shade instead of sending palette photos, kee
   assert.match(prompt,/#C8913A/);assert.match(prompt,/#C99A7E/);assert.match(prompt,/mid-calf/);
 });
 
-test('skin tone comes from the headshot, for makeup matching only',async()=>{
+test('skin tone and hair come from the owner\'s photos, for makeup and hairstyles only',async()=>{
   let sent;
-  const out=await perform('skin',{image:photo},adapter(async(url,init)=>{sent=JSON.parse(init.body);return modelResult({depth:'light-medium',undertone:'warm',hex:'#C99A7E',notes:'Warm golds suit.'})}));
-  assert.equal(out.hex,'#C99A7E');
+  const out=await perform('skin',{image:photo,body:photo},adapter(async(url,init)=>{sent=JSON.parse(init.body);return modelResult({depth:'light-medium',undertone:'warm',hex:'#C99A7E',notes:'Warm golds suit.',hairLength:'mid-back',hairColor:'dark brown',hairTexture:'wavy'})}));
+  assert.equal(out.hex,'#C99A7E');assert.equal(out.hairLength,'mid-back');
+  assert.equal(sent.input[0].content.length,2,'headshot and full-body photo, so hair length is visible');
   assert.equal(sent.text.format.name,'skin_tone');
   assert.match(sent.instructions,/Do not infer ethnicity/);
 });

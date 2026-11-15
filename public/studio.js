@@ -29,7 +29,7 @@ async function refresh(){const [i,r,l,s,a]=await Promise.all(['items','refs','lo
 async function setting(id,value){settings[id]=value;await put('settings',{id,value})}
 const publicItem=({photos,intake,nameLocked,categoryLocked,created,...item})=>item;
 function context(){const p=pref();return {wardrobe:items.filter(i=>!i.intake).map(publicItem),outfit:current()?lookFields(current()):null,preferences:{style:p.style,creativity:p.creativity},occasion:p.occasion,context:p.context,sass:p.sass,feedback:historyFields()}}
-function lookFields(l){return {id:l.id,title:l.title,itemIds:l.itemIds,styling:l.styling,makeup:l.makeup,makeupPlan:l.makeupPlan||[],reasoning:l.reasoning,occasion:l.occasion}}
+function lookFields(l){return {id:l.id,title:l.title,itemIds:l.itemIds,styling:l.styling,makeup:l.makeup,makeupPlan:l.makeupPlan||[],hair:l.hair||null,reasoning:l.reasoning,occasion:l.occasion}}
 function historyFields(){return looks.slice(0,25).map(l=>({title:l.title,itemIds:l.itemIds,rating:l.rating,feedback:l.feedback,occasion:l.occasion}))}
 const request=(path,body)=>api(path,body);
 async function status(){try{state=await request('status')}catch{state={enabled:false}}}
@@ -129,11 +129,12 @@ function details(l){
  return '<section class="look-card"><span class="micro">Look notes</span><h2>'+esc(l.title)+'</h2><div class="actions"><button type="button" id="save-look" '+(l.saved?'disabled':'')+'>'+(l.saved?'Saved to lookbook':'Save look')+'</button>'+wearMarkup(l)+'<button type="button" id="rate-look">Rate after wearing</button>'+(l.image&&!busy&&renderError?.id!==l.id?'<button type="button" class="text-btn" id="regenerate" '+(state.enabled?'':'disabled')+'>Regenerate image</button>':'')+'</div>'
   +'<details class="settings" data-keep="why"><summary>Why this look</summary><div>'+sayMarkup(l,'why')+'</div></details>'
   +'<details class="settings" data-keep="pieces" open><summary>Pieces · '+l.itemIds.length+'</summary><div class="item-strip" role="list" aria-label="Pieces in this look">'+pieces+'</div></details>'
-  +'<details class="settings" data-keep="steps"><summary>Styling &amp; makeup</summary><div>'+swatches(l)+sayMarkup(l,'steps')+'</div></details></section>';
+  +'<details class="settings" data-keep="steps"><summary>'+(l.hair?.style?'Styling, hair &amp; makeup':'Styling &amp; makeup')+'</summary><div>'+swatches(l)+sayMarkup(l,'steps')+'</div></details></section>';
 }
 // ---------- Read aloud: look notes in a natural voice, highlighting each word as it's spoken ----------
 let reader=null;
-const sayParts=(l,key)=>(key==='why'?[l.reasoning]:[l.styling,l.makeup]).map(p=>String(p||'').trim()).filter(Boolean);
+const hairLine=l=>l.hair?.style?'Hair: '+String(l.hair.style).trim().replace(/[.]$/,'')+'. '+String(l.hair.steps||'').trim():'';
+const sayParts=(l,key)=>(key==='why'?[l.reasoning]:[l.styling,hairLine(l),l.makeup]).map(p=>String(p||'').trim()).filter(Boolean);
 const sayText=(l,key)=>sayParts(l,key).join('\n\n');
 async function textId(text){const d=await crypto.subtle.digest('SHA-256',new TextEncoder().encode('marin|'+text));return Array.from(new Uint8Array(d),b=>b.toString(16).padStart(2,'0')).join('')}
 function sayMarkup(l,key){
@@ -219,7 +220,8 @@ function openArea(key,spot){
  const notes=area.notes.length?'<section class="area-part"><h3 class="section-label">Styling notes</h3><ul class="note-list">'+area.notes.map(n=>'<li>'+esc(n)+'</li>').join('')+'</ul></section>':'';
  const pieces=area.items.length?'<section class="area-part"><h3 class="section-label">From your closet</h3><p class="hint">Selected for this look. The render may not show every piece clearly.</p><div class="piece-list">'+area.items.map(i=>'<div class="piece"><img src="'+esc(source(i.photos?.[0]))+'" alt="Original photo of '+esc(i.name)+'"><div><strong>'+esc(i.name)+'</strong><span class="pill">Selected</span><small>'+esc(i.category)+'</small></div></div>').join('')+'</div></section>':'';
  const shades=key==='face'&&swatches(l)?'<section class="area-part"><h3 class="section-label">Shades</h3>'+swatches(l)+'</section>':'';
- sheet(area.title,'<div class="vstack area-sheet">'+view+shades+notes+pieces+'</div>');
+ const hair=key==='face'&&l.hair?.style?'<section class="area-part"><h3 class="section-label">Hair · '+esc(l.hair.style)+'</h3><p>'+esc(l.hair.steps||'')+'</p></section>':'';
+ sheet(area.title,'<div class="vstack area-sheet">'+view+hair+shades+notes+pieces+'</div>');
 }
 function render(){
  if(!ready)return;
@@ -245,13 +247,19 @@ async function visualize(l){
  await put('looks',{...latest,image:response.image,renderFailed:false,hotspots:null,imagePrompt:response.prompt,imageModel:response.model});
 }
 function revealViewer(){const v=$('#viewer');if(!v)return;const r=v.getBoundingClientRect();if(r.top<0||r.top>innerHeight*0.5)v.scrollIntoView({block:'start',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'})}
-// Skin tone for makeup matching, read once from the headshot (and again if the headshot changes).
+// Skin tone and hair (length, color, texture), read once from the headshot and full-body photo, and again if either changes.
+// Used to match makeup shades and to keep hairstyles possible.
 async function ensureSkin(){
- const head=refs.find(r=>r.id==='head-front');if(!head||!state.enabled)return settings.skin||null;
- if(settings.skin?.ref===head.photo)return settings.skin;
- try{const res=await request('skin',{image:await referenceJPEG(await assetBlob(head.photo))});const skin={depth:res.depth,undertone:res.undertone,hex:res.hex,notes:res.notes,ref:head.photo};await setting('skin',skin);return skin}catch{return settings.skin||null}
+ const head=refs.find(r=>r.id==='head-front'),body=refs.find(r=>r.id==='body-front');if(!head||!state.enabled)return settings.skin||null;
+ const ref=head.photo+'|'+(body?.photo||'');
+ if(settings.skin?.ref===ref&&settings.skin.hairLength!==undefined)return settings.skin;
+ try{
+  const img=async id=>referenceJPEG(await assetBlob(id));
+  const res=await request('skin',{image:await img(head.photo),...(body?{body:await img(body.photo)}:{})});
+  const skin={depth:res.depth,undertone:res.undertone,hex:res.hex,notes:res.notes,hairLength:res.hairLength||'',hairColor:res.hairColor||'',hairTexture:res.hairTexture||'',ref};await setting('skin',skin);return skin;
+ }catch{return settings.skin||null}
 }
-const skinFields=skin=>skin?{depth:skin.depth,undertone:skin.undertone,hex:skin.hex,notes:skin.notes}:undefined;
+const skinFields=skin=>skin?{depth:skin.depth,undertone:skin.undertone,hex:skin.hex,notes:skin.notes,hairLength:skin.hairLength,hairColor:skin.hairColor,hairTexture:skin.hairTexture}:undefined;
 async function runLook(imageOnly){
  if(busy)return;stopReader();failure='';renderError=null;detailsOn=false;held=current()?.image||null;sameRun=imageOnly;
  busy=imageOnly?'render':'select';render();revealViewer();live(imageOnly?'Rendering your look…':'Selecting pieces…');
@@ -532,9 +540,10 @@ function edit(ids,{index=0}={}){
  draw();
 }
 function skinRow(){
- const k=settings.skin,head=refs.find(r=>r.id==='head-front');if(!head)return '';
- const fresh=k&&k.ref===head.photo;
- return '<div class="skin-row"><span class="swatch big" style="background:'+(fresh&&/^#[0-9a-f]{6}$/i.test(k.hex||'')?k.hex:'transparent')+'" aria-hidden="true"></span><div><strong>Skin tone for makeup</strong><small>'+(fresh?esc([k.depth,k.undertone&&k.undertone+' undertone'].filter(Boolean).join(', ')):state.enabled?'Read from your headshot the next time you generate a look.':'Read from your headshot once paid AI is on.')+'</small></div>'+(fresh&&state.enabled?'<button type="button" class="text-btn" id="skin-redo">Read again</button>':'')+'</div>';
+ const k=settings.skin,head=refs.find(r=>r.id==='head-front'),body=refs.find(r=>r.id==='body-front');if(!head)return '';
+ const fresh=k&&k.ref===head.photo+'|'+(body?.photo||'')&&k.hairLength!==undefined;
+ const hair=fresh?[k.hairLength,k.hairColor,k.hairTexture].filter(Boolean).join(', '):'';
+ return '<div class="skin-row"><span class="swatch big" style="background:'+(fresh&&/^#[0-9a-f]{6}$/i.test(k.hex||'')?k.hex:'transparent')+'" aria-hidden="true"></span><div><strong>Skin &amp; hair, for makeup and hairstyles</strong><small>'+(fresh?esc([k.depth,k.undertone&&k.undertone+' undertone'].filter(Boolean).join(', '))+(hair?'<br>Hair: '+esc(hair):''):state.enabled?'Read from your photos the next time you generate a look.':'Read from your photos once paid AI is on.')+'</small></div>'+(fresh&&state.enabled?'<button type="button" class="text-btn" id="skin-redo">Read again</button>':'')+'</div>';
 }
 function profile(){
  const slots=[...refSlots,...refs.filter(r=>!refSlots.some(([id])=>r.id===id)).map(r=>[r.id,r.label||'Additional reference'])];
