@@ -343,3 +343,7 @@ fieldset.choice input{accent-color:var(--oxblood);width:16px;height:16px;margin:
 .say [data-w]{border-radius:2px;transition:background-color 80ms linear,color 80ms linear}
 .say [data-w].spoken{background:var(--butter);color:var(--oxblood);box-shadow:0 0 0 2px var(--butter)}
 @media(prefers-reduced-motion:reduce){.say [data-w]{transition:none}}
+/* Wearing a look today */
+.worn{display:inline-flex;align-items:center;gap:6px}
+.worn .pill{margin-top:0;background:var(--petrol);color:var(--paper);border-color:var(--petrol)}
+@media(max-width:520px){.tabs [role=tab]{padding:10px 10px;letter-spacing:.1em;flex:1 1 auto}}

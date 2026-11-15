@@ -117,3 +117,21 @@ test('read-aloud makes one counted speech call, times the words, and survives a 
   await assert.rejects(perform('speak',{text:''},{env,fetchImpl,reserve(){}}),/read aloud/);
   await assert.rejects(perform('speak',{text:'x'},{env,fetchImpl:async()=>new Response('',{status:429}),reserve(){}}),/429/);
 });
+
+test('outfit selection asks for variety: the closet is shuffled and the last three looks are named',async()=>{
+  const closet=Array.from({length:30},(_,i)=>({id:'t'+i,category:i<10?'Tops':i<20?'Bottoms':'Shoes',name:'piece '+i,status:'available'}));
+  const history=[{itemIds:['t1','t11','t21']},{itemIds:['t2','t12']},{itemIds:['t3']},{itemIds:['t4']}];
+  const orders=new Set();let sent;
+  for(let n=0;n<4;n++){
+    await perform('select',{items:closet,occasion:'Everyday',history},adapter(async(url,init)=>{
+      sent=JSON.parse(init.body);const ctx=JSON.parse(sent.input[0].content[0].text);
+      orders.add(ctx.items.map(i=>i.id).join());
+      assert.deepEqual(ctx.recentlyUsedPieceIds.sort(),['t1','t11','t12','t2','t21','t3'].sort(),'only the three most recent looks');
+      assert.equal(ctx.items.length,30,'every piece is still offered');
+      return modelResult({...look,itemIds:['t5','t15','t25']});
+    }));
+  }
+  assert.ok(orders.size>1,'the order changes between requests');
+  assert.match(sent.instructions,/Favor variety/);
+  assert.match(sent.instructions,/recentlyUsedPieceIds/);
+});

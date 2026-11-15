@@ -83,3 +83,26 @@ export function createIntake({prepare, upload, save, knownPhoto = () => false, c
     },
   };
 }
+
+// True when a piece's name is only a camera or file name ("IMG 0409", "PXL_2026…", "Screenshot 2026-11-01 at 10.32"), or empty.
+export function genericName(name) {
+  const s = String(name || '').trim();
+  if (!s) return true;
+  if (/^[0-9a-f]{8}[\s_-]?[0-9a-f]{4}/i.test(s)) return true;
+  const rest = s.replace(/_/g, ' ')
+    .replace(/\b(img|image|photo|pic|pxl|dsc|dscn|dcim|screenshot|screen shot|shopping|new piece|untitled|piece|copy|edited|at|am|pm)\b/gi, '')
+    .replace(/\b[a-z](?=\d)/gi, '')
+    .replace(/[\d\s_\-.:()]+/g, '');
+  return !rest;
+}
+
+// Merges an AI description into a piece without overwriting anything the user chose:
+// the name only replaces a file name, the category only fills an empty one, and details only fill empty fields.
+export function describedRecord(item, suggestion, {categories, fields}) {
+  const next = {...item}, filled = [];
+  const text = v => typeof v === 'string' ? v.trim() : '';
+  if (genericName(item.name) && text(suggestion?.name)) { next.name = text(suggestion.name).slice(0, 120); filled.push('name'); }
+  if (!item.category && categories.includes(suggestion?.category)) { next.category = suggestion.category; filled.push('category'); }
+  for (const k of fields) if (!text(item[k]) && text(suggestion?.[k])) { next[k] = text(suggestion[k]).slice(0, 500); filled.push(k); }
+  return {record: next, filled};
+}

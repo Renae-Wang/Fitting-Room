@@ -1,5 +1,5 @@
 import {openStore,all,batch,put,remove,photoRecord,referenceJPEG,collectAssets,assetBlob,uploadPhoto} from './store.js';
-import {planPieces,createIntake} from './intake.js';
+import {planPieces,createIntake,describedRecord} from './intake.js';
 import {tokenize,alignWords,wordAt} from './readaloud.js';
 import {client,configured,keyProblem,currentSession,sendLink,signOut,api} from './supabase.js';
 import {AREAS,SPOT_LABELS,lookAreas,spotsFor,cropStyle,containRect} from './details.js';
@@ -38,9 +38,9 @@ function sheet(title,markup){guard=null;redrawCloset=null;reviewWake=null;dialog
 function close(){if($('#sheet').open)$('#sheet').close()}
 // Every way out of a sheet goes through requestClose, so unsaved upload work is never lost by accident.
 function requestClose(proceed=close){if(guard?.dirty()){askDiscard(guard.summary?.()||'',()=>{const g=guard;guard=null;g?.discard?.();proceed()});return}guard=null;proceed()}
-function askConfirm({title,body,keep,act},onAct){
+function askConfirm({title,body,keep,act,tone='danger'},onAct){
  const d=$('#confirm');if(d.open)return;$('#confirm-title').textContent=title;$('#confirm-body').textContent=body;
- const k=$('#keep-reviewing'),a=$('#discard-work');k.textContent=keep;a.textContent=act;
+ const k=$('#keep-reviewing'),a=$('#discard-work');k.textContent=keep;a.textContent=act;a.className=tone==='danger'?'danger':'';
  k.onclick=()=>d.close();a.onclick=()=>{d.close();onAct()};
  d.showModal();k.focus();
 }
@@ -98,9 +98,31 @@ function viewer(l){
   +(ready&&areas.length?'<button type="button" class="details-toggle" id="details-toggle" aria-expanded="'+detailsOn+'"'+(detailsOn?' aria-controls="detail-list"':'')+'>'+(detailsOn?'Hide details':'Details')+'</button>':'')
   +'</div><figcaption><span>'+esc(caption(l))+'</span><span class="micro">'+esc(date)+'</span></figcaption></figure>'+(ready&&detailsOn&&areas.length?detailList(l,areas):'');
 }
+// ---------- Wearing a look sends its washable pieces to Laundry ----------
+const washable=new Set(['Tops','Bottoms','Dresses / One-pieces']);
+const today=()=>new Date().toLocaleDateString('en-CA');
+const wornLabel=d=>d===today()?'Worn today':'Worn '+new Date(d+'T12:00').toLocaleDateString(undefined,{month:'short',day:'numeric'});
+function wearMarkup(l){return l.wornOn?'<span class="worn"><span class="pill">'+esc(wornLabel(l.wornOn))+'</span><button type="button" class="text-btn" id="unwear-look">Undo</button></span>':'<button type="button" id="wear-look">Wearing this today</button>'}
+async function wear(){
+ const l=looks.find(x=>x.id===current()?.id);if(!l)return;
+ const wash=l.itemIds.map(id=>items.find(i=>i.id===id)).filter(i=>i&&washable.has(i.category)&&i.status==='available');
+ await batch([...wash.map(i=>({store:'items',record:{...i,status:'laundry'}})),{store:'looks',record:{...l,saved:true,wornOn:today(),laundered:wash.map(i=>i.id)}}]);
+ await refresh();refreshLook();$('#unwear-look')?.focus();
+ notify(wash.length?plural(wash.length,'piece','pieces')+' moved to Laundry. Shoes and accessories stay available.':'Marked as worn today.');
+}
+async function unwear(){
+ const l=looks.find(x=>x.id===current()?.id);if(!l)return;
+ const back=(l.laundered||[]).map(id=>items.find(i=>i.id===id)).filter(i=>i?.status==='laundry');
+ await batch([...back.map(i=>({store:'items',record:{...i,status:'available'}})),{store:'looks',record:{...l,wornOn:undefined,laundered:undefined}}]);
+ await refresh();refreshLook();$('#wear-look')?.focus();notify(back.length?plural(back.length,'piece is','pieces are')+' available again.':'No longer marked as worn.');
+}
+async function setStatus(ids,status){
+ const list=ids.map(id=>items.find(i=>i.id===id)).filter(i=>i&&i.status!==status);
+ if(list.length)await batch(list.map(i=>({store:'items',record:{...i,status}})));await refresh();return list.length;
+}
 function details(l){
  const pieces=l.itemIds.map(id=>{const it=items.find(i=>i.id===id);return it?'<div class="item-chip"><img src="'+esc(source(it.photos[0]))+'" alt=""><span>'+esc(it.name)+'</span></div>':'<span class="hint">Deleted closet item</span>'}).join('');
- return '<section class="look-card"><span class="micro">Look notes</span><h2>'+esc(l.title)+'</h2><div class="actions"><button type="button" id="save-look" '+(l.saved?'disabled':'')+'>'+(l.saved?'Saved to lookbook':'Save look')+'</button><button type="button" id="rate-look">Rate after wearing</button>'+(l.image&&!busy&&renderError?.id!==l.id?'<button type="button" class="text-btn" id="regenerate" '+(state.enabled?'':'disabled')+'>Regenerate image</button>':'')+'</div>'
+ return '<section class="look-card"><span class="micro">Look notes</span><h2>'+esc(l.title)+'</h2><div class="actions"><button type="button" id="save-look" '+(l.saved?'disabled':'')+'>'+(l.saved?'Saved to lookbook':'Save look')+'</button>'+wearMarkup(l)+'<button type="button" id="rate-look">Rate after wearing</button>'+(l.image&&!busy&&renderError?.id!==l.id?'<button type="button" class="text-btn" id="regenerate" '+(state.enabled?'':'disabled')+'>Regenerate image</button>':'')+'</div>'
   +'<details class="settings" data-keep="why"><summary>Why this look</summary><div>'+sayMarkup(l,'why')+'</div></details>'
   +'<details class="settings" data-keep="pieces"><summary>Pieces · '+l.itemIds.length+'</summary><div class="item-strip">'+pieces+'</div></details>'
   +'<details class="settings" data-keep="steps"><summary>Styling &amp; makeup</summary><div>'+sayMarkup(l,'steps')+'</div></details></section>';
@@ -170,7 +192,7 @@ function wireLook(){
  on('#details-toggle','click',()=>{detailsOn=!detailsOn;const l=current();refreshLook();$('#details-toggle')?.focus();if(detailsOn&&l?.image&&!l.hotspots)mapLook(l.id)});
  document.querySelectorAll('#look-col [data-area]').forEach(b=>b.onclick=wrap(()=>openArea(b.dataset.area,b.dataset.spot)));
  on('#retry-image','click',()=>runLook(true));on('#render-look','click',()=>runLook(true));on('#regenerate','click',()=>runLook(true));
- on('#save-look','click',async()=>{const l=current();await put('looks',{...l,saved:true});await refresh();refreshLook();notify('Saved to your lookbook.')});on('#rate-look','click',rate);
+ on('#save-look','click',async()=>{const l=current();await put('looks',{...l,saved:true});await refresh();refreshLook();notify('Saved to your lookbook.')});on('#rate-look','click',rate);on('#wear-look','click',wear);on('#unwear-look','click',unwear);
  document.querySelectorAll('#look-col [data-listen]').forEach(b=>b.onclick=wrap(()=>listen(b.dataset.listen)));
  if(reader){if(reader.lookId!==current()?.id)stopReader();else{reader.shown=-2;paint()}}
  layoutSpots();
@@ -237,7 +259,7 @@ async function runLook(imageOnly){
  if(mapped)mapLook(mapped);
 }
 function lookbook(){
- const rows=looks.map(l=>'<div class="history-row">'+(l.image?'<img alt="" src="'+esc(l.image)+'">':'<span class="history-blank"></span>')+'<div class="history-title"><strong>'+esc(l.title)+'</strong><small>'+esc(l.occasion)+' · '+(l.saved?'Saved':'Generated')+(l.rating?' · '+l.rating+'/5':'')+'</small></div><button data-view="'+l.id+'">View</button><button data-drop="'+l.id+'" aria-label="Remove '+esc(l.title)+'">×</button></div>').join('');
+ const rows=looks.map(l=>'<div class="history-row">'+(l.image?'<img alt="" src="'+esc(l.image)+'">':'<span class="history-blank"></span>')+'<div class="history-title"><strong>'+esc(l.title)+'</strong><small>'+esc(l.occasion)+' · '+(l.wornOn?esc(wornLabel(l.wornOn)):l.saved?'Saved':'Generated')+(l.rating?' · '+l.rating+'/5':'')+'</small></div><button data-view="'+l.id+'">View</button><button data-drop="'+l.id+'" aria-label="Remove '+esc(l.title)+'">×</button></div>').join('');
  sheet('Lookbook','<div class="vstack">'+(rows||'<div class="empty-note">Your generated looks and wear ratings will appear here.</div>')+'</div>');
  document.querySelectorAll('[data-view]').forEach(b=>b.onclick=wrap(async()=>{active=b.dataset.view;detailsOn=false;renderError=null;await setting('activeLook',active);close();render()}));
  document.querySelectorAll('[data-drop]').forEach(b=>b.onclick=()=>{const id=b.dataset.drop;askConfirm({title:'Delete this look?',body:'Its preview, notes and rating are removed. Your closet pieces stay. This can’t be undone.',keep:'Keep look',act:'Delete look'},wrap(async()=>{if(reader?.lookId===id)stopReader();await remove('looks',id);await collectAssets();await refresh();if(active===id){active=looks[0]?.id||'';await setting('activeLook',active)}lookbook();render()}))});
@@ -246,7 +268,9 @@ function rate(){const l=current();sheet('After wearing','<form id="feedback" cla
 // ---------- Closet: reviewed pieces and an Unreviewed section ----------
 let picking=false,closetTab='closet',redrawCloset=null,reviewWake=null,reviewLater=false;const picked=new Set();
 const inboxItems=()=>items.filter(i=>i.intake).sort((a,b)=>(a.created||0)-(b.created||0));
-const closetPieces=()=>items.filter(i=>!i.intake);
+const closetPieces=()=>items.filter(i=>!i.intake&&i.status!=='laundry');
+const laundryItems=()=>items.filter(i=>!i.intake&&i.status==='laundry');
+const pools={closet:closetPieces,laundry:laundryItems,inbox:inboxItems};
 function intakeBanner(){
  const p=intake?.progress();if(!p||(!p.total&&!p.failed))return '';
  if(p.busy)return '<div class="intake-banner" role="status"><div><strong>Uploading · '+p.finished+' of '+p.total+' done</strong><span class="hint">Each piece is saved to Unreviewed as soon as its photos are up.'+(p.failed?' '+plural(p.failed,'piece','pieces')+' failed so far.':'')+'</span></div><progress max="'+p.total+'" value="'+p.finished+'" aria-label="Upload progress"></progress></div>';
@@ -254,6 +278,50 @@ function intakeBanner(){
  return '<div class="intake-banner done" role="status"><div><strong>'+plural(p.saved,'piece','pieces')+' uploaded</strong>'+(p.skipped?'<span class="hint">'+plural(p.skipped,'photo was','photos were')+' already in your closet, so '+(p.skipped===1?'it was':'they were')+' skipped.</span>':'')+'</div></div>';
 }
 const tabButton=(key,label,n)=>'<button type="button" role="tab" id="tab-'+key+'" data-tab="'+key+'" aria-selected="'+(closetTab===key)+'" tabindex="'+(closetTab===key?0:-1)+'">'+label+' <span class="count">'+n+'</span></button>';
+// ---------- Describe with AI: name and tag many pieces from their photos ----------
+let describing=null;
+function describeBanner(){
+ const r=describing;if(!r)return '';
+ if(r.running)return '<div class="intake-banner" role="status"><div><strong>Describing with AI · '+r.done+' of '+r.total+'</strong><span class="hint">'+(r.stop?'Stopping after the pieces in progress…':'Each piece’s first photo goes to OpenAI. Names you typed and categories you chose stay.')+'</span></div><progress max="'+r.total+'" value="'+r.done+'" aria-label="Describe progress"></progress><button type="button" id="describe-stop" '+(r.stop?'disabled':'')+'>Stop</button></div>';
+ const left=r.total-r.done;
+ return '<div class="intake-banner '+(r.limit||r.failed?'failed':'done')+'" role="'+(r.limit?'alert':'status')+'"><div><strong>Described '+plural(r.changed,'piece','pieces')+'</strong><span class="hint">'
+  +(r.limit?'Today’s tagging limit ran out with '+left+' left. Raise DAILY_TAG_LIMIT in your Supabase secrets, or continue tomorrow. ':left?left+' not started. ':'')
+  +(r.failed?plural(r.failed,'photo','photos')+' couldn’t be read'+(r.lastError?' ('+esc(r.lastError)+')':'')+'. ':'')
+  +(r.changed?'They’re still selected: tap Review to spot-check.':'')+'</span></div><button type="button" class="text-btn" id="describe-dismiss">Dismiss</button></div>';
+}
+function askDescribe(ids){
+ if(!ids.length||describing?.running)return;
+ const left=state.remaining?.tag,short=typeof left==='number'&&left<ids.length;
+ askConfirm({title:'Describe '+plural(ids.length,'piece','pieces')+' with AI?',tone:'go',
+  body:'Each piece’s first photo is sent to OpenAI, one tagging request per piece. '+(typeof left==='number'?left+' tagging requests left today'+(short?', so it stops after '+left+'. Raise DAILY_TAG_LIMIT first to do them all.':'.'):'')+' Camera-file names like “IMG 0409” are replaced and empty categories and details are filled; anything you typed stays.',
+  keep:'Not now',act:'Describe '+plural(ids.length,'piece','pieces')},wrap(()=>describeMany(ids)));
+}
+async function describeMany(ids){
+ const run=describing={total:ids.length,done:0,changed:0,failed:0,running:true,stop:false,limit:false};
+ const queue=[...ids],fields=attrs.map(a=>a[0]);let last=0;
+ const tick=async force=>{if(!force&&Date.now()-last<700)return;last=Date.now();await refresh();redrawCloset?.()};
+ redrawCloset?.();
+ const worker=async()=>{
+  while(queue.length&&!run.stop){
+   const id=queue.shift(),it=items.find(i=>i.id===id);
+   try{
+    if(!it?.photos?.length)throw Error('no photo');
+    const {suggestions}=await request('tag',{image:await referenceJPEG(await assetBlob(it.photos[0]))});
+    const s=Array.isArray(suggestions)?suggestions[0]:null;
+    if(!s){run.failed++;run.lastError='nothing recognisable'}
+    else{const {record,filled}=describedRecord(items.find(i=>i.id===id)||it,s,{categories,fields});if(filled.length){await put('items',record);run.changed++}}
+    run.done++;
+   }catch(e){
+    if(/limit reached/i.test(e.message||'')){run.stop=true;run.limit=true;queue.unshift(id)}
+    else{run.failed++;run.done++;run.lastError=String(e.message||'').slice(0,90)}
+   }
+   await tick();
+  }
+ };
+ await Promise.all([worker(),worker(),worker()]);
+ run.running=false;await status();await tick(true);render();
+ notify(run.limit?'Daily tagging limit reached after '+plural(run.done,'piece','pieces')+'.':'Described '+plural(run.changed,'piece','pieces')+(run.failed?'; '+run.failed+' couldn’t be read':'')+'.');
+}
 async function toCloset(ids){
  const list=ids.map(id=>items.find(i=>i.id===id)).filter(Boolean),missing=list.filter(i=>!i.category);
  if(missing.length){notify(plural(missing.length,'piece needs','pieces need')+' a category first. Select '+(missing.length===1?'it':'them')+' and use Move to category.');return false}
@@ -261,36 +329,44 @@ async function toCloset(ids){
  render();notify('Added '+plural(list.length,'piece','pieces')+' to your closet.');return true;
 }
 function closet(tab){
- if((tab==='closet'||tab==='inbox')&&tab!==closetTab){closetTab=tab;picked.clear();picking=false}
- const inbox=()=>closetTab==='inbox',pool=()=>inbox()?inboxItems():closetPieces();
+ if(pools[tab]&&tab!==closetTab){closetTab=tab;picked.clear();picking=false}
+ const inbox=()=>closetTab==='inbox',laundry=()=>closetTab==='laundry',pool=()=>pools[closetTab]();
  for(const id of [...picked])if(!pool().some(i=>i.id===id))picked.delete(id);
  if(picked.size)picking=true;
  const filters=['All categories',...categories].map(c=>'<option>'+esc(c)+'</option>').join('')+(inbox()?'<option value="none">No category yet</option>':'');
- sheet('Closet','<div class="vstack closet"><div class="tabs" role="tablist" aria-label="Closet sections">'+tabButton('closet','Closet',closetPieces().length)+tabButton('inbox','Unreviewed',inboxItems().length)+'</div><div id="intake-slot"></div><div class="row"><label class="field">Search<input type="search" id="item-search" placeholder="Search your closet"></label><label class="field">Category<select id="cat-filter">'+filters+'</select></label></div><div class="actions" id="closet-tools"></div><div id="catalog" class="list-grid" role="tabpanel" aria-labelledby="tab-'+closetTab+'"></div><div id="bulk-bar" class="bulk-bar" hidden></div></div>');
+ sheet('Closet','<div class="vstack closet"><div class="tabs" role="tablist" aria-label="Closet sections">'+tabButton('closet','Closet',closetPieces().length)+tabButton('laundry','Laundry',laundryItems().length)+tabButton('inbox','Unreviewed',inboxItems().length)+'</div><div id="intake-slot"></div><div id="describe-slot"></div><div class="row"><label class="field">Search<input type="search" id="item-search" placeholder="Search your closet"></label><label class="field">Category<select id="cat-filter">'+filters+'</select></label></div><div class="actions" id="closet-tools"></div><div id="catalog" class="list-grid" role="tabpanel" aria-labelledby="tab-'+closetTab+'"></div><div id="bulk-bar" class="bulk-bar" hidden></div></div>');
  let shown=[];
  const bar=()=>{
   const el=$('#bulk-bar');el.hidden=!picking;if(!picking)return;
   const n=picked.size,allShown=shown.length&&shown.every(i=>picked.has(i.id));
-  el.innerHTML='<div class="bulk-head"><strong role="status">'+(n?plural(n,'piece','pieces')+' selected':'Tap pieces to select them')+'</strong><div class="actions">'+(shown.length?'<button type="button" class="text-btn" id="pick-all">'+(allShown?'Unselect shown':'Select all shown')+'</button>':'')+(n?'<button type="button" class="text-btn" id="pick-none">Clear</button>':'')+'</div></div>'
-   +(n?'<div class="bulk-actions"><label class="field bulk-move"><span class="sr-only">Move selected pieces to category</span><select id="bulk-cat"><option value="" selected disabled>Move to category…</option>'+categories.map(c=>'<option>'+esc(c)+'</option>').join('')+'</select></label><button type="button" id="bulk-apply" disabled>Move</button>'+(inbox()?'<button type="button" id="bulk-add">Add to closet</button>':'')+'<button type="button" id="bulk-review">Review</button><button type="button" id="bulk-delete" class="danger">Delete</button></div>':'');
+  const run=describing?.running?describing:null;
+  el.innerHTML='<div class="bulk-head"><strong role="status">'+(run?'Describing '+run.done+' of '+run.total+'…':n?plural(n,'piece','pieces')+' selected':'Tap pieces to select them')+'</strong><div class="actions">'+(run?'<button type="button" class="text-btn" id="describe-stop-bar" '+(run.stop?'disabled':'')+'>Stop describing</button>':'')+(shown.length?'<button type="button" class="text-btn" id="pick-all">'+(allShown?'Unselect shown':'Select all shown')+'</button>':'')+(n?'<button type="button" class="text-btn" id="pick-none">Clear</button>':'')+'</div></div>'
+   +(n?'<div class="bulk-actions"><label class="field bulk-move"><span class="sr-only">Move selected pieces to category</span><select id="bulk-cat"><option value="" selected disabled>Move to category…</option>'+categories.map(c=>'<option>'+esc(c)+'</option>').join('')+'</select></label><button type="button" id="bulk-apply" disabled>Move</button>'+(inbox()?'<button type="button" id="bulk-add">Add to closet</button>':'')+(laundry()?'<button type="button" id="bulk-available">Mark available</button>':closetTab==='closet'?'<button type="button" id="bulk-laundry">Send to laundry</button>':'')+(state.enabled?'<button type="button" id="bulk-describe" '+(describing?.running?'disabled':'')+'>Describe with AI</button>':'')+'<button type="button" id="bulk-review">Review</button><button type="button" id="bulk-delete" class="danger">Delete</button></div>':'');
   on('#pick-all','click',()=>{if(allShown)shown.forEach(i=>picked.delete(i.id));else shown.forEach(i=>picked.add(i.id));draw()});
   on('#pick-none','click',()=>{picked.clear();draw()});
+  on('#describe-stop-bar','click',()=>{if(describing)describing.stop=true;draw()});
   on('#bulk-cat','change',e=>{$('#bulk-apply').disabled=!e.target.value});
   on('#bulk-apply','click',async()=>{const cat=$('#bulk-cat').value;if(!cat)return;const ids=[...picked];await batch(ids.map(id=>({store:'items',record:{...items.find(i=>i.id===id),category:cat}})));await refresh();draw();render();notify('Moved '+plural(ids.length,'piece','pieces')+' to '+cat+'.')});
   on('#bulk-add','click',async()=>{if(await toCloset([...picked]))draw()});
+  on('#bulk-available','click',async()=>{const ids=[...picked],n=await setStatus(ids,'available');for(const id of ids)picked.delete(id);draw();render();notify(plural(n,'piece is','pieces are')+' available again.')});
+  on('#bulk-laundry','click',async()=>{const ids=[...picked],n=await setStatus(ids,'laundry');for(const id of ids)picked.delete(id);draw();render();notify(plural(n,'piece','pieces')+' moved to Laundry.')});
+  on('#bulk-describe','click',()=>askDescribe(shown.filter(i=>picked.has(i.id)).map(i=>i.id).concat([...picked].filter(id=>!shown.some(i=>i.id===id)))));
   on('#bulk-review','click',()=>{const ids=shown.filter(i=>picked.has(i.id)).map(i=>i.id),rest=[...picked].filter(id=>!ids.includes(id));if(ids.length+rest.length)review([...ids,...rest],{inbox:inbox()})});
   on('#bulk-delete','click',()=>askDelete([...picked],draw));
  };
  const draw=()=>{
   if(!$('#catalog'))return;
   $('#intake-slot').innerHTML=intakeBanner();document.querySelectorAll('.intake-retry').forEach(b=>b.onclick=()=>intake.retry());
-  $('#tab-closet .count').textContent=closetPieces().length;$('#tab-inbox .count').textContent=inboxItems().length;
+  $('#describe-slot').innerHTML=describeBanner();on('#describe-stop','click',()=>{if(describing)describing.stop=true;draw()});on('#describe-dismiss','click',()=>{describing=null;draw()});
+  for(const k in pools)$('#tab-'+k+' .count').textContent=pools[k]().length;
   const query=$('#item-search').value.toLowerCase().trim(),cat=$('#cat-filter').value,list=pool();
   shown=list.filter(i=>(cat==='All categories'||(cat==='none'?!i.category:cat===i.category))&&[i.name,i.category,i.color,i.status,i.material,i.pattern].some(v=>String(v||'').toLowerCase().includes(query)));
   const fresh=list.filter(i=>i.intake==='new').length,ready=list.filter(i=>i.intake==='ready').length;
   $('#closet-tools').innerHTML=inbox()
    ?(fresh?'<button type="button" class="primary" id="review-all">Review one by one</button>':'')+(ready?'<button type="button" '+(fresh?'':'class="primary" ')+'id="add-ready">Add '+plural(ready,'reviewed piece','reviewed pieces')+' to closet</button>':'')+'<button type="button" id="pick-mode" aria-pressed="false">Select</button><button type="button" class="text-btn" id="add-item">Add photos</button><span id="item-count" class="hint"></span>'
+   :laundry()?(list.length?'<button type="button" class="primary" id="laundry-done">Laundry done · Mark all available</button>':'')+'<button type="button" id="pick-mode" aria-pressed="false">Select</button><span id="item-count" class="hint"></span>'
    :'<button type="button" id="add-item" class="primary">'+icon('plus')+'Add pieces</button><button type="button" id="pick-mode" aria-pressed="false">Select</button><span id="item-count" class="hint"></span>';
+  on('#laundry-done','click',async()=>{const n=await setStatus(laundryItems().map(i=>i.id),'available');picked.clear();picking=false;draw();render();notify(plural(n,'piece is','pieces are')+' back in your closet.')});
   const mode=$('#pick-mode');mode.setAttribute('aria-pressed',String(picking));mode.textContent=picking?'Done selecting':'Select';
   $('#item-count').textContent=inbox()?(list.length?fresh+' to review · '+ready+' reviewed':''):plural(shown.length,'piece','pieces');
   on('#add-item','click',uploadStart);
@@ -298,7 +374,7 @@ function closet(tab){
   on('#review-all','click',()=>{const ids=inboxItems().map(i=>i.id),start=inboxItems().findIndex(i=>i.intake==='new');review(ids,{inbox:true,index:Math.max(0,start)})});
   on('#add-ready','click',async()=>{if(await toCloset(inboxItems().filter(i=>i.intake==='ready').map(i=>i.id)))draw()});
   const tile=i=>{const on=picked.has(i.id);return '<button type="button" class="tile'+(picking?' pickable':'')+(on?' picked':'')+'" '+(picking?'data-pick="'+i.id+'" aria-pressed="'+on+'"':'data-open="'+i.id+'"')+'>'+(picking?'<span class="tick" aria-hidden="true"></span>':'')+(i.intake?'<span class="pill tile-pill'+(i.intake==='ready'?'':' new')+'">'+(i.intake==='ready'?'Reviewed':'New')+'</span>':'')+'<img alt="" src="'+esc(source(i.photos[0]))+'"><strong>'+esc(i.name)+'</strong><small>'+(i.category?esc(i.category):'No category yet')+(i.status!=='available'?' · '+esc(i.status):'')+'</small></button>'};
-  $('#catalog').innerHTML=shown.length?shown.map(tile).join(''):'<div class="empty-note">'+(list.length?'No matching pieces.':inbox()?'Nothing to review. Photos you upload with “Review later” appear here.':'Add your first piece to start your closet.')+'</div>';
+  $('#catalog').innerHTML=shown.length?shown.map(tile).join(''):'<div class="empty-note">'+(list.length?'No matching pieces.':inbox()?'Nothing to review. Photos you upload with “Review later” appear here.':laundry()?'Nothing in the wash. When you mark a look as worn, its tops, bottoms and dresses land here.':'Add your first piece to start your closet.')+'</div>';
   document.querySelectorAll('[data-open]').forEach(b=>b.onclick=wrap(()=>{const id=b.dataset.open;if(inbox()){const ids=shown.map(i=>i.id);review(ids,{inbox:true,index:ids.indexOf(id)})}else review([id])}));
   document.querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>{const id=b.dataset.pick;picked.has(id)?picked.delete(id):picked.add(id);const on=picked.has(id);b.classList.toggle('picked',on);b.setAttribute('aria-pressed',String(on));bar()});
   bar();
