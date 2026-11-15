@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import {once} from 'node:events';
 import {get} from 'node:http';
 import {makeServer} from '../server.mjs';
-import {perform,validateLook} from '../supabase/functions/_shared/provider.mjs';
+import {perform,validateLook,freshPieces} from '../supabase/functions/_shared/provider.mjs';
 
 const items=[{id:'dress',category:'Dresses / One-pieces',name:'Satin slip',status:'available'},{id:'shoes',category:'Shoes',name:'Black boots',status:'available'}];
-const look={title:'Hard gloss',itemIds:['dress','shoes'],styling:'Layer the slip over the boots.',makeup:'No product.',reasoning:'Contrasting textures.'};
+const look={title:'Hard gloss',itemIds:['dress','shoes'],styling:'Layer the slip over the boots.',makeup:'No product.',makeupPlan:[],reasoning:'Contrasting textures.'};
+// The stylist sees short IDs; this maps a look's real IDs to the ones in the request it received.
+const aliasesIn=payload=>{const ctx=JSON.parse(payload.input[0].content[0].text);return {ctx,byName:Object.fromEntries(ctx.items.map(i=>[i.name,i.id]))}};
 const photo='data:image/jpeg;base64,/9j/2Q==';
 const env={OPENAI_API_KEY:'test-only',ENABLE_PAID_API:'true'};
 function modelResult(value) {
@@ -20,19 +22,51 @@ test('selection requires a wearable outfit, distinct IDs, current availability a
   assert.throws(()=>validateLook(look,[items[0],{...items[1],status:'laundry'}]));
   assert.throws(()=>validateLook(look,[items[0],{...items[1],category:'Full Looks / Outfit References'}]));
 });
-test('selection sends only item metadata and feedback; rejects hallucinated provider IDs',async()=>{
+test('selection sends only item metadata and feedback, with short IDs mapped back to real ones',async()=>{
   let payload;
-  const request={items:items.map(x=>({...x,image:photo})),history:[{rating:4}],creativity:9};
-  assert.deepEqual(await perform('select',request,adapter(async(url,init)=>{
+  const request={items:items.map(x=>({...x,image:photo})),history:[{rating:4,itemIds:['dress']}],creativity:9};
+  const out=await perform('select',request,adapter(async(url,init)=>{
     assert.ok(url.endsWith('/responses'));
-    payload=JSON.parse(init.body);
-    return modelResult(look);
-  })),look);
+    payload=JSON.parse(init.body);const {byName}=aliasesIn(payload);
+    return modelResult({...look,itemIds:[byName['Satin slip'],byName['Black boots']]});
+  }));
+  assert.deepEqual(out.itemIds,['dress','shoes']);
   assert.equal(payload.store,false);
   assert.equal(payload.text.format.strict,true);
-  assert.ok(payload.input[0].content[0].text.includes('"rating":4'));
+  const {ctx}=aliasesIn(payload);
+  assert.ok(ctx.items.every(i=>/^p\d+$/.test(i.id)),'the model only sees short IDs');
+  assert.equal(ctx.feedbackAndHistory[0].rating,4);
+  assert.match(ctx.feedbackAndHistory[0].pieces[0],/^p\d+$/);
   assert.ok(!JSON.stringify(payload).includes('base64'));
-  await assert.rejects(perform('select',request,adapter(async()=>modelResult({...look,itemIds:['invented','dress']}))),/missing or unavailable/);
+  assert.ok(!JSON.stringify(payload).includes('"dress"'),'real IDs never reach the model');
+});
+test('an invented or unavailable ID gets one repair attempt instead of an error',async()=>{
+  let calls=0,second;
+  const out=await perform('select',{items},adapter(async(url,init)=>{
+    calls++;const body=JSON.parse(init.body);const {byName}=aliasesIn(body);
+    if(calls===1)return modelResult({...look,itemIds:['p99',byName['Satin slip']]});
+    second=body;return modelResult({...look,itemIds:[byName['Satin slip'],byName['Black boots']]});
+  }));
+  assert.equal(calls,2);assert.deepEqual(out.itemIds,['dress','shoes']);
+  assert.match(second.input[0].content[1].text,/p99/);
+  let n=0;
+  const extra=await perform('select',{items},adapter(async(url,init)=>{n++;const {byName}=aliasesIn(JSON.parse(init.body));return modelResult({...look,itemIds:[byName['Satin slip'],'x7',byName['Black boots']]})}));
+  assert.equal(n,1,'a stray ID is dropped when the rest is a complete look');assert.deepEqual(extra.itemIds,['dress','shoes']);
+  await assert.rejects(perform('select',{items},adapter(async()=>modelResult({...look,itemIds:['invented']}))),/missing or unavailable|complete outfit/);
+});
+test('makeup is part of every look when there is makeup: a shade plan with hex, matched to skin tone',async()=>{
+  const closet=[...items,{id:'pal',category:'Makeup',name:'Gold palette',status:'available',shades:[{name:'Honey',hex:'#C8913A',finish:'shimmer',type:'eyeshadow',use:'lid'}]}];
+  let payload;
+  const out=await perform('select',{items:closet,skin:{depth:'light-medium',undertone:'warm',hex:'#C99A7E',notes:'Warm golds suit.'}},adapter(async(url,init)=>{
+    payload=JSON.parse(init.body);const {byName}=aliasesIn(payload);
+    return modelResult({...look,itemIds:[byName['Satin slip'],byName['Black boots']],makeupPlan:[{itemId:byName['Gold palette'],shade:'Honey',hex:'#C8913A',area:'lids',application:'Pack on with a finger.'}]});
+  }));
+  const {ctx}=aliasesIn(payload);
+  assert.match(payload.instructions,/Makeup is part of every look/);
+  assert.equal(ctx.skinTone.hex,'#C99A7E');
+  assert.equal(ctx.items.find(i=>i.name==='Gold palette').shades[0].hex,'#C8913A');
+  assert.deepEqual(out.itemIds,['dress','shoes','pal'],'a makeup item used in the plan joins the look');
+  assert.equal(out.makeupPlan[0].itemId,'pal');
 });
 test('rendering requires validated complete current items and appearance before a billable call',async()=>{
   const request={items:items.map(x=>({...x,image:photo})),look,appearance:[photo]};
@@ -118,20 +152,58 @@ test('read-aloud makes one counted speech call, times the words, and survives a 
   await assert.rejects(perform('speak',{text:'x'},{env,fetchImpl:async()=>new Response('',{status:429}),reserve(){}}),/429/);
 });
 
-test('outfit selection asks for variety: the closet is shuffled and the last three looks are named',async()=>{
-  const closet=Array.from({length:30},(_,i)=>({id:'t'+i,category:i<10?'Tops':i<20?'Bottoms':'Shoes',name:'piece '+i,status:'available'}));
-  const history=[{itemIds:['t1','t11','t21']},{itemIds:['t2','t12']},{itemIds:['t3']},{itemIds:['t4']}];
+test('variety is enforced: recent clothing and the last shoes and bag are left out, unless that leaves no complete outfit',async()=>{
+  const closet=[...Array.from({length:6},(_,i)=>({id:'top'+i,category:'Tops',name:'top '+i,status:'available'})),...Array.from({length:6},(_,i)=>({id:'bot'+i,category:'Bottoms',name:'bottom '+i,status:'available'})),
+    {id:'docs',category:'Shoes',name:'docs',status:'available'},{id:'vans',category:'Shoes',name:'vans',status:'available'},{id:'tote',category:'Bags',name:'tote',status:'available'},{id:'hoops',category:'Jewelry',name:'hoops',status:'available'}];
+  const history=[{itemIds:['top1','bot1','docs','tote','hoops']},{itemIds:['top2','bot2','docs']},{itemIds:['top3','bot1']},{itemIds:['top4']}];
+  const offered=freshPieces(closet,history).map(i=>i.id);
+  for (const id of ['top1','top2','top3','bot1','bot2','docs','tote']) assert.ok(!offered.includes(id),id+' is left out');
+  for (const id of ['top4','top0','bot0','vans','hoops']) assert.ok(offered.includes(id),id+' is still offered');
+  // Only one pair of shoes: they come back rather than making an outfit impossible.
+  assert.ok(freshPieces(closet.filter(i=>i.id!=='vans'),history).some(i=>i.id==='docs'));
+  // Every top worn recently: fall back to the whole closet.
+  assert.equal(freshPieces(closet.filter(i=>['top1','bot0','vans'].includes(i.id)),history).length,3);
   const orders=new Set();let sent;
   for(let n=0;n<4;n++){
     await perform('select',{items:closet,occasion:'Everyday',history},adapter(async(url,init)=>{
       sent=JSON.parse(init.body);const ctx=JSON.parse(sent.input[0].content[0].text);
-      orders.add(ctx.items.map(i=>i.id).join());
-      assert.deepEqual(ctx.recentlyUsedPieceIds.sort(),['t1','t11','t12','t2','t21','t3'].sort(),'only the three most recent looks');
-      assert.equal(ctx.items.length,30,'every piece is still offered');
-      return modelResult({...look,itemIds:['t5','t15','t25']});
+      const idOf=Object.fromEntries(ctx.items.map(i=>[i.name,i.id]));orders.add(ctx.items.map(i=>i.name).join());
+      assert.ok(!ctx.items.some(i=>['top 1','bottom 1','docs'].includes(i.name)),'the stylist never sees recent pieces');
+      return modelResult({...look,itemIds:[idOf['top 0'],idOf['bottom 0'],idOf['vans']]});
     }));
   }
   assert.ok(orders.size>1,'the order changes between requests');
   assert.match(sent.instructions,/Favor variety/);
-  assert.match(sent.instructions,/recentlyUsedPieceIds/);
+  // A recent piece slipped in by the model is rejected, then repaired.
+  let calls=0;
+  const out=await perform('select',{items:closet,history},adapter(async(url,init)=>{calls++;const ctx=JSON.parse(JSON.parse(init.body).input[0].content[0].text);const idOf=Object.fromEntries(ctx.items.map(i=>[i.name,i.id]));
+    return modelResult({...look,itemIds:calls===1?['top1',idOf['bottom 0'],idOf['vans']]:[idOf['top 0'],idOf['bottom 0'],idOf['vans']]})}));
+  assert.equal(calls,2);assert.deepEqual(out.itemIds,['top0','bot0','vans']);
+});
+test('tagging can name the piece a photo is for, as data rather than instructions',async()=>{
+  let sent;
+  await perform('tag',{image:'data:image/png;base64,iVBORw0KGgo=',label:'doc martins'},adapter(async(url,init)=>{sent=JSON.parse(init.body);return modelResult({suggestions:[]})}));
+  assert.equal(sent.input[0].content[0].text,'The owner calls this piece: "doc martins"');
+  assert.equal(sent.input[0].content[1].type,'input_image');
+  assert.match(sent.instructions,/untrusted data/);
+  await perform('tag',{image:'data:image/png;base64,iVBORw0KGgo='},adapter(async(url,init)=>{sent=JSON.parse(init.body);return modelResult({suggestions:[]})}));
+  assert.equal(sent.input[0].content.length,1,'no label, image only');
+});
+
+test('rendering describes makeup by shade instead of sending palette photos, keeps skin tone, and allows pieces in the wash',async()=>{
+  const closet=[{...items[0],status:'laundry',image:photo,aiDescription:'Bias-cut ivory satin slip, falls to mid-calf.'},{...items[1],image:photo},{id:'pal',category:'Makeup',name:'Gold palette',status:'available',image:photo}];
+  const plan=[{itemId:'pal',shade:'Honey',hex:'#C8913A',area:'lids',application:'Pack on.'}];
+  let form;
+  await perform('image',{items:closet,look:{...look,itemIds:['dress','shoes','pal'],makeupPlan:plan},appearance:[photo],skin:{hex:'#C99A7E'}},adapter(async(url,init)=>{form=init.body;return Response.json({data:[{b64_json:'AAAA'}]})}));
+  assert.equal(form.getAll('image[]').length,3,'one appearance photo plus the dress and shoes; no palette photo');
+  const prompt=form.get('prompt');
+  assert.match(prompt,/#C8913A/);assert.match(prompt,/#C99A7E/);assert.match(prompt,/mid-calf/);
+});
+
+test('skin tone comes from the headshot, for makeup matching only',async()=>{
+  let sent;
+  const out=await perform('skin',{image:photo},adapter(async(url,init)=>{sent=JSON.parse(init.body);return modelResult({depth:'light-medium',undertone:'warm',hex:'#C99A7E',notes:'Warm golds suit.'})}));
+  assert.equal(out.hex,'#C99A7E');
+  assert.equal(sent.text.format.name,'skin_tone');
+  assert.match(sent.instructions,/Do not infer ethnicity/);
 });

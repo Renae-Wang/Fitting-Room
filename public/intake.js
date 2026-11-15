@@ -96,13 +96,41 @@ export function genericName(name) {
   return !rest;
 }
 
+// Words that say what a piece is, or only its color or metal, but nothing that tells two of them apart.
+const plainWords = new Set(('ring rings belt belts earring earrings necklace necklaces bracelet bracelets cuff cuffs arm ear watch clip clips hair hat cap scarf gloves '
+  + 'bag bags purse shoe shoes boot boots heel heels top tops shirt sweater jacket coat bra skirt pants jeans shorts dress swimsuit '
+  + 'makeup palette eyeliner lipstick lip powder eyeshadow piece item accessory jewelry thing '
+  + 'silver gold black white brown red blue green pink purple yellow orange gray grey beige cream tan navy and a the my').split(' '));
+
+// True when a name you typed is too plain for the stylist to tell pieces apart: "ring", "belt", "silver earrings", "arm cuff (big)".
+export function vagueName(name) {
+  const words = String(name || '').replace(/\([^)]*\)/g, ' ').toLowerCase().split(/[\s/]+/).filter(Boolean);
+  return words.length > 0 && words.length <= 3 && words.every(w => plainWords.has(w));
+}
+
 // Merges an AI description into a piece without overwriting anything the user chose:
-// the name only replaces a file name, the category only fills an empty one, and details only fill empty fields.
-export function describedRecord(item, suggestion, {categories, fields}) {
+// the name only replaces a file name or a plain one like "ring", the category is corrected unless you set it by hand,
+// and the AI-only description, colors and makeup shades are filled when missing (or always, with refresh).
+// Anything you edit by hand is locked against AI.
+const hex = v => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v.trim()) ? v.trim().toUpperCase() : '';
+const clean = (list, keys, max) => (Array.isArray(list) ? list : []).slice(0, max)
+  .map(x => Object.fromEntries(keys.map(k => [k, k === 'hex' ? hex(x?.[k]) : String(x?.[k] ?? '').trim().slice(0, k === 'use' ? 160 : 60)])))
+  .filter(x => x.name);
+export function describedRecord(item, suggestion, {categories, refresh = false}) {
   const next = {...item}, filled = [];
   const text = v => typeof v === 'string' ? v.trim() : '';
-  if (genericName(item.name) && text(suggestion?.name)) { next.name = text(suggestion.name).slice(0, 120); filled.push('name'); }
-  if (!item.category && categories.includes(suggestion?.category)) { next.category = suggestion.category; filled.push('category'); }
-  for (const k of fields) if (!text(item[k]) && text(suggestion?.[k])) { next[k] = text(suggestion[k]).slice(0, 500); filled.push(k); }
+  if (!item.nameLocked && (genericName(item.name) || vagueName(item.name)) && text(suggestion?.name)) {
+    // Keep your own note in brackets, like "(pinky)" or "(big)".
+    const note = genericName(item.name) ? '' : (String(item.name).match(/\([^)]*\)/g) || []).join(' ');
+    next.name = (text(suggestion.name) + (note ? ' ' + note : '')).slice(0, 120); filled.push('name');
+  }
+  // AI sorts every piece into its category, correcting earlier mistakes, unless you set the category by hand.
+  if (!item.categoryLocked && categories.includes(suggestion?.category) && suggestion.category !== item.category) { next.category = suggestion.category; filled.push('category'); }
+  const description = text(suggestion?.description).slice(0, 1200);
+  if (description && (refresh || !text(item.aiDescription))) { next.aiDescription = description; filled.push('aiDescription'); }
+  const colors = clean(suggestion?.colors, ['name', 'hex'], 6);
+  if (colors.length && (refresh || !item.colors?.length)) { next.colors = colors; filled.push('colors'); }
+  const shades = clean(suggestion?.shades, ['name', 'hex', 'finish', 'type', 'use'], 40);
+  if ((next.category === 'Makeup') && shades.length && (refresh || !item.shades?.length)) { next.shades = shades; filled.push('shades'); }
   return {record: next, filled};
 }
