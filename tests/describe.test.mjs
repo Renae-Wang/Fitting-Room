@@ -36,3 +36,14 @@ test('plain names you typed are flagged for a better one; descriptive ones are n
     assert.equal(vagueName(n), false, n);
 });
 
+
+test('a description you wrote is kept by Describe with AI, and replaced only when you ask AI again', () => {
+  const opts = {categories: ['Tops']};
+  const s = {name: 'olive ribbed tank', category: 'Tops', description: 'Olive ribbed tank.', colors: [{name: 'olive', hex: '#708238'}], shades: []};
+  const mine = {id: 'm', name: 'green tank', category: 'Tops', aiDescription: 'Forest green ribbed tank, fitted, ends at the high hip.', descriptionByHand: true};
+  const kept = describedRecord(mine, s, opts);
+  assert.equal(kept.record.aiDescription, mine.aiDescription); assert.equal(kept.record.colors, undefined, 'its colors are left alone too');
+  assert.equal(kept.record.name, 'olive ribbed tank', 'the name can still be rewritten');
+  const asked = describedRecord(mine, s, {...opts, force: true});
+  assert.equal(asked.record.aiDescription, 'Olive ribbed tank.'); assert.ok(!asked.record.descriptionByHand);
+});

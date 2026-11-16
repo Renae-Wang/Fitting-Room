@@ -108,15 +108,16 @@ export function vagueName(name) {
   return words.length > 0 && words.length <= 3 && words.every(w => plainWords.has(w));
 }
 
-// Applies an AI description to a piece. AI rewrites the short name you see, the category, and the detailed
-// description (with colors and, for makeup, shades) that only the AI reads. Nothing is locked; a note you added
-// in brackets to the name, like "(pinky)", is kept.
+// Applies an AI description to a piece. AI rewrites the short name you see and the category, and the detailed
+// description (with colors and, for makeup, shades) that the AI reads, except a description you wrote or edited
+// yourself (descriptionByHand), which is kept unless you ask AI to describe the piece again (force).
+// A note you added in brackets to the name, like "(pinky)", is kept.
 const hex = v => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v.trim()) ? v.trim().toUpperCase() : '';
 const clean = (list, keys, max) => (Array.isArray(list) ? list : []).slice(0, max)
   .map(x => Object.fromEntries(keys.map(k => [k, k === 'hex' ? hex(x?.[k]) : String(x?.[k] ?? '').trim().slice(0, k === 'use' ? 160 : 60)])))
   .filter(x => x.name);
 const same = (a, b) => JSON.stringify(a ?? '') === JSON.stringify(b ?? '');
-export function describedRecord(item, suggestion, {categories}) {
+export function describedRecord(item, suggestion, {categories, force = false}) {
   const next = {...item}, filled = [];
   delete next.nameLocked; delete next.categoryLocked;
   const text = v => typeof v === 'string' ? v.trim() : '';
@@ -126,11 +127,15 @@ export function describedRecord(item, suggestion, {categories}) {
     set('name', (text(suggestion.name) + (note ? ' ' + note : '')).slice(0, 120));
   }
   if (categories.includes(suggestion?.category)) set('category', suggestion.category);
-  const description = text(suggestion?.description).slice(0, 1200);
-  if (description) set('aiDescription', description);
-  const colors = clean(suggestion?.colors, ['name', 'hex'], 6);
-  if (colors.length) set('colors', colors);
-  const shades = clean(suggestion?.shades, ['name', 'hex', 'finish', 'type', 'use'], 40);
-  if (next.category === 'Makeup' && shades.length) set('shades', shades);
+  const mine = item.descriptionByHand && text(item.aiDescription) && !force;
+  if (!mine) {
+    if (force) delete next.descriptionByHand;
+    const description = text(suggestion?.description).slice(0, 1200);
+    if (description) set('aiDescription', description);
+    const colors = clean(suggestion?.colors, ['name', 'hex'], 6);
+    if (colors.length) set('colors', colors);
+    const shades = clean(suggestion?.shades, ['name', 'hex', 'finish', 'type', 'use'], 40);
+    if (next.category === 'Makeup' && shades.length) set('shades', shades);
+  }
   return {record: next, filled};
 }

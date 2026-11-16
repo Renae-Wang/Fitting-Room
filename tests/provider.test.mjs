@@ -260,3 +260,11 @@ test('fresh starts: an unworn anchor piece, and streaky shoes or jewelry sit one
     return modelResult({...look,itemIds:[idOf['top 3'],idOf['bottom 1'],idOf['loafers']]})}));
   assert.match(sent.instructions,/Build this look around the anchor piece/);
 });
+
+test('tagging judges the lighting first and reports colors corrected for it',async()=>{
+  let sent;
+  await perform('tag',{image:photo},adapter(async(url,init)=>{sent=JSON.parse(init.body);return modelResult({lighting:'warm bulb',suggestions:[]})}));
+  assert.ok(sent.text.format.schema.required.indexOf('lighting')<sent.text.format.schema.required.indexOf('suggestions'),'lighting is judged before the pieces');
+  assert.match(sent.instructions,/warm or dim light makes black look dark brown/);
+  assert.match(sent.instructions,/forest green/);
+});

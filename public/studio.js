@@ -125,7 +125,7 @@ function swatches(l){
  return '<ul class="swatches" aria-label="Makeup shades">'+plan.map(s=>{const it=items.find(i=>i.id===s.itemId);return '<li><span class="swatch" style="background:'+(/^#[0-9a-f]{6}$/i.test(s.hex||'')?s.hex:'transparent')+'" aria-hidden="true"></span><div><strong>'+esc(s.shade)+'</strong><small>'+esc([s.area,it?.name].filter(Boolean).join(' · '))+'</small></div></li>'}).join('')+'</ul>';
 }
 function details(l){
- const pieces=l.itemIds.map(id=>{const it=items.find(i=>i.id===id);return it?'<div class="item-chip" role="listitem"><img src="'+esc(source(it.photos[0]))+'" alt=""><span>'+esc(it.name)+'</span></div>':'<div class="item-chip gone" role="listitem"><span class="hint">Deleted closet item</span></div>'}).join('');
+ const pieces=l.itemIds.map(id=>{const it=items.find(i=>i.id===id);return it?'<button type="button" class="item-chip" role="listitem" data-piece="'+esc(it.id)+'" aria-label="'+esc(it.name)+': view or edit"><img src="'+esc(source(it.photos[0]))+'" alt=""><span>'+esc(it.name)+'</span></button>':'<div class="item-chip gone" role="listitem"><span class="hint">Deleted closet item</span></div>'}).join('');
  return '<section class="look-card"><span class="micro">Look notes</span><h2>'+esc(l.title)+'</h2><div class="actions"><button type="button" id="save-look" '+(l.saved?'disabled':'')+'>'+(l.saved?'Saved to lookbook':'Save look')+'</button>'+wearMarkup(l)+'<button type="button" id="rate-look">Rate after wearing</button>'+(l.image&&!busy&&renderError?.id!==l.id?'<button type="button" class="text-btn" id="regenerate" '+(state.enabled?'':'disabled')+'>Regenerate image</button>':'')+'</div>'
   +'<details class="settings" data-keep="why"><summary>Why this look</summary><div>'+sayMarkup(l,'why')+'</div></details>'
   +'<details class="settings" data-keep="pieces" open><summary>Pieces · '+l.itemIds.length+'</summary><div class="item-strip" role="list" aria-label="Pieces in this look">'+pieces+'</div></details>'
@@ -197,6 +197,7 @@ function wireLook(){
  on('#details-toggle','click',()=>{detailsOn=!detailsOn;const l=current();refreshLook();$('#details-toggle')?.focus();if(detailsOn&&l?.image&&!l.hotspots)mapLook(l.id)});
  document.querySelectorAll('#look-col [data-area]').forEach(b=>b.onclick=wrap(()=>openArea(b.dataset.area,b.dataset.spot)));
  on('#retry-image','click',()=>runLook(true));on('#render-look','click',()=>runLook(true));on('#regenerate','click',()=>runLook(true));
+ document.querySelectorAll('#look-col [data-piece]').forEach(b=>b.onclick=()=>edit([b.dataset.piece],{back:()=>{close();render()}}));
  on('#save-look','click',async()=>{const l=current();await put('looks',{...l,saved:true});await refresh();refreshLook();notify('Saved to your lookbook.')});on('#rate-look','click',rate);on('#wear-look','click',wear);on('#unwear-look','click',unwear);
  document.querySelectorAll('#look-col [data-listen]').forEach(b=>b.onclick=wrap(()=>listen(b.dataset.listen)));
  if(reader){if(reader.lookId!==current()?.id)stopReader();else{reader.shown=-2;paint()}}
@@ -295,7 +296,7 @@ function closeUp(i){
  const l=looks[i];if(!l)return;lbGo?.(i);
  if(l.image&&!l.hotspots)mapLook(l.id).then(()=>{if($('#sheet').open&&$('.lb-look')?.dataset.look===l.id)closeUp(looks.findIndex(x=>x.id===l.id))});
  const areas=l.image?lookAreas(l,items):[];
- const pieces=l.itemIds.map(id=>{const it=items.find(x=>x.id===id);return it?'<div class="item-chip" role="listitem"><img src="'+esc(source(it.photos[0]))+'" alt=""><span>'+esc(it.name)+'</span></div>':'<div class="item-chip gone" role="listitem"><span class="hint">Deleted closet item</span></div>'}).join('');
+ const pieces=l.itemIds.map(id=>{const it=items.find(x=>x.id===id);return it?'<button type="button" class="item-chip" role="listitem" data-piece="'+esc(it.id)+'" aria-label="'+esc(it.name)+': view or edit"><img src="'+esc(source(it.photos[0]))+'" alt=""><span>'+esc(it.name)+'</span></button>':'<div class="item-chip gone" role="listitem"><span class="hint">Deleted closet item</span></div>'}).join('');
  const para=t=>String(t||'').trim()?'<p>'+esc(t)+'</p>':'';
  sheet(l.title,'<div class="vstack lb-look" data-look="'+esc(l.id)+'">'
   +'<nav class="area-nav lb-look-nav" aria-label="Looks"><button type="button" class="area-step" data-look-step="-1" aria-label="Previous look" '+(i===0?'disabled':'')+'>‹</button><span class="hint">'+esc(lookDate(l))+' · '+(i+1)+' of '+looks.length+'</span><button type="button" class="area-step" data-look-step="1" aria-label="Next look" '+(i===looks.length-1?'disabled':'')+'>›</button></nav>'
@@ -307,6 +308,7 @@ function closeUp(i){
   +'<details class="settings"><summary>'+(l.hair?.style?'Styling, hair &amp; makeup':'Styling &amp; makeup')+'</summary><div>'+swatches(l)+para(l.styling)+para(hairLine(l))+para(l.makeup)+'</div></details>'
   +'<div class="actions"><button type="button" class="primary" id="lb-open">Open in Studio</button></div></div>');
  document.querySelectorAll('[data-look-step]').forEach(b=>b.onclick=()=>{closeUp(i+Number(b.dataset.lookStep));$('[data-look-step="'+b.dataset.lookStep+'"]:not(:disabled)')?.focus()});
+ document.querySelectorAll('.lb-look [data-piece]').forEach(b=>b.onclick=()=>edit([b.dataset.piece],{back:()=>{lookbookPage();closeUp(looks.findIndex(x=>x.id===l.id))}}));
  document.querySelectorAll('[data-area-open]').forEach(b=>b.onclick=()=>openArea(b.dataset.areaOpen,null,looks.find(x=>x.id===l.id)||l,()=>closeUp(looks.findIndex(x=>x.id===l.id))));
  on('#lb-open','click',()=>{close();openLook(l.id)});
 }
@@ -510,12 +512,12 @@ const fields=['name','category','aiDescription','status'];
 const aiKeys=['aiDescription','colors','shades'];
 // Edits one piece, or several one after another when you select them. Each piece is saved when you move on.
 // You see the photo, name, category and the detailed description the AI stylist reads; any of them can be edited.
-function edit(ids,{index=0}={}){
+function edit(ids,{index=0,back:returnTo=null}={}){
  ids=ids.filter(id=>items.some(i=>i.id===id));if(!ids.length)return;
  let edits={},fromAI={};
  const show=i=>{edits={};fromAI={};index=Math.max(0,Math.min(i,ids.length-1));draw()};
- const back=()=>closet(closetTab);
- const finish=()=>{back();notify(ids.length>1?'Saved '+plural(ids.length,'piece','pieces')+'.':'Closet updated.')};
+ const back=returnTo||(()=>closet(closetTab));
+ const finish=()=>{back();notify(ids.length>1?'Saved '+plural(ids.length,'piece','pieces')+'.':returnTo?'Piece updated.':'Closet updated.')};
  const title=()=>ids.length===1?'Edit piece':'Edit piece '+(index+1)+' of '+ids.length;
  const values=()=>{const form=$('#edit-form');return form?Object.fromEntries(fields.map(k=>[k,String(new FormData(form).get(k)??'')])):{}};
  const changed=(it,v)=>fields.some(k=>String(v[k]??'')!==String(it[k]??''))||Object.keys(fromAI).length>0;
@@ -524,7 +526,9 @@ function edit(ids,{index=0}={}){
   if(!name)throw Error('Give this piece a name.');
   if(!changed(it,v))return;
   const {nameLocked,categoryLocked,...rest}=it;
-  await put('items',{...rest,...fromAI,...v,name,aiDescription:v.aiDescription.trim(),intake:undefined});await refresh();
+  const desc=v.aiDescription.trim(),base=String(('aiDescription' in fromAI?fromAI.aiDescription:it.aiDescription)??'').trim();
+  const mine=desc!==base?{descriptionByHand:true,colors:undefined}:'aiDescription' in fromAI?{descriptionByHand:undefined}:{};
+  await put('items',{...rest,...fromAI,...v,name,aiDescription:desc,intake:undefined,...mine});await refresh();
  }
  function draw(){
   const id=ids[index],it=items.find(x=>x.id===id);
@@ -534,7 +538,7 @@ function edit(ids,{index=0}={}){
   const catOptions=(d.category?'':'<option value="" selected disabled>Choose a category</option>')+options(categories,d.category);
   sheet(title(),'<form id="edit-form" class="vstack" novalidate><div class="photo-strip">'+d.photos.map((pid,n)=>'<div><img alt="Piece angle '+(n+1)+'" src="'+esc(assets.has(pid)?source(pid):'')+'">'+(d.photos.length>1?'<button type="button" class="text-btn" data-remove-angle="'+pid+'">Remove</button>':'')+'</div>').join('')+'</div>'
    +(it.intake?'<p class="hint" role="status">AI is still describing this piece, so its name and description may update in a moment.</p>':'')
-   +'<label class="field">Name<input name="name" maxlength="120" required value="'+esc(d.name)+'"></label><label class="field">Category<select name="category">'+catOptions+'</select></label><label class="field">AI description<span class="hint field-hint">Hidden elsewhere. What the stylist and image model read to tell this piece apart.</span><textarea name="aiDescription" rows="5" maxlength="1200" placeholder="AI writes this from the photo.">'+esc(d.aiDescription||'')+'</textarea></label>'
+   +'<label class="field">Name<input name="name" maxlength="120" required value="'+esc(d.name)+'"></label><label class="field">Category<select name="category">'+catOptions+'</select></label><label class="field">AI description<span class="hint field-hint">'+(d.descriptionByHand?'Written by you, so Describe with AI keeps it. Ask AI to describe it again (under More) to replace it.':'What the stylist and image model read to tell this piece apart. Edit it and Describe with AI will keep your version.')+'</span><textarea name="aiDescription" rows="5" maxlength="1200" placeholder="AI writes this from the photo.">'+esc(d.aiDescription||'')+'</textarea></label>'
    +(Object.keys(fromAI).length?'<p class="hint" role="status">Updated by AI. Save to keep it.</p>':'')
    +'<details class="settings"><summary>More</summary><div class="vstack"><label class="field">Status<select name="status">'+options(['available','laundry','unavailable','archived'],d.status)+'</select></label><label class="field">Add photos of other angles<input type="file" id="more-angles" multiple accept="'+accepts+'"></label>'+(state.enabled?'<div class="actions"><button type="button" id="tag-photo">Ask AI to describe it again</button></div><div id="tag-results" aria-live="polite"></div>':'')+'</div></details>'
    +'<p id="inline-error" role="alert" class="error"></p><div class="form-foot">'+nav+'<button class="primary">'+(ids.length===1?'Save':last?'Save &amp; finish':'Save &amp; next')+'</button><button type="button" id="back-closet">Cancel</button><button type="button" id="delete-item" class="danger">Delete piece</button></div></form>');
@@ -549,7 +553,7 @@ function edit(ids,{index=0}={}){
    keep();const label=genericName(edits.name??it.name)||vagueName(edits.name??it.name)?'':(edits.name??it.name);
    const {suggestions}=await request('tag',{image:await referenceJPEG(await assetBlob(it.photos[0])),...(label?{label}:{})});if(seq!==dialogSeq)return;if(!Array.isArray(suggestions)||!suggestions.length)throw Error('AI couldn’t make out a piece in this photo.');
    // Asking again refreshes the hidden description and fixes the name and category, as if you had chosen them.
-   const apply=sug=>{const {record}=describedRecord({...it,name:edits.name??it.name,category:edits.category??it.category},sug,{categories});fromAI=Object.fromEntries(['name','category',...aiKeys].filter(k=>record[k]!==undefined).map(k=>[k,record[k]]));edits={...edits,name:fromAI.name,category:fromAI.category??edits.category,aiDescription:fromAI.aiDescription??edits.aiDescription}};
+   const apply=sug=>{const {record}=describedRecord({...it,name:edits.name??it.name,category:edits.category??it.category},sug,{categories,force:true});fromAI=Object.fromEntries(['name','category',...aiKeys].filter(k=>record[k]!==undefined).map(k=>[k,record[k]]));edits={...edits,name:fromAI.name,category:fromAI.category??edits.category,aiDescription:fromAI.aiDescription??edits.aiDescription}};
    apply(suggestions[0]);draw();
    if(suggestions.length>1){const target=$('#tag-results');target.innerHTML='<p class="hint">This photo shows '+suggestions.length+' pieces. Using “'+esc(suggestions[0].name)+'”.</p><div class="actions">'+suggestions.slice(1).map((sg,i)=>'<button type="button" data-sug="'+(i+1)+'">Use “'+esc(sg.name)+'” instead</button>').join('')+'<button type="button" id="split">Add the others as separate pieces</button></div>';
     target.closest('details').open=true;

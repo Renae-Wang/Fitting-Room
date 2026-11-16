@@ -427,3 +427,8 @@ html,body{overflow-x:clip;max-width:100%}
 .lb-look-nav{display:flex}
 .area-sheet:focus{outline:none}
 .field-hint{font-size:12px;letter-spacing:0;text-transform:none;font-weight:400}
+/* Pieces in a look open in the editor */
+button.item-chip{padding:0;border:0;border-radius:0;background:none;min-height:0;color:inherit;text-align:left;cursor:pointer;font:700 11px/1.25 var(--ui);font-stretch:70%;letter-spacing:.08em;text-transform:uppercase}
+button.item-chip:hover:not(:disabled){background:none}
+button.item-chip:hover img,button.item-chip:focus-visible img{box-shadow:4px 4px 0 var(--oxblood)}
+button.item-chip:active:not(:disabled){transform:none}
