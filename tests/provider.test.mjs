@@ -209,7 +209,9 @@ test('rendering describes makeup by shade instead of sending palette photos, kee
   await perform('image',{items:closet,look:{...look,itemIds:['dress','shoes','pal'],makeupPlan:plan},appearance:[photo],skin:{hex:'#C99A7E'}},adapter(async(url,init)=>{form=init.body;return Response.json({data:[{b64_json:'AAAA'}]})}));
   assert.equal(form.getAll('image[]').length,3,'one appearance photo plus the dress and shoes; no palette photo');
   const prompt=form.get('prompt');
-  assert.match(prompt,/#C8913A/);assert.match(prompt,/#C99A7E/);assert.match(prompt,/mid-calf/);
+  assert.match(prompt,/#C8913A/);assert.match(prompt,/mid-calf/);
+  assert.match(prompt,/Likeness is the top priority/);assert.ok(!/#C99A7E/.test(prompt),'skin comes from the photos, not a hex code');
+  assert.ok(prompt.indexOf('Likeness')<prompt.indexOf('Image 2'),'likeness comes before the pieces');
 });
 
 test('skin tone and hair come from the owner\'s photos, for makeup and hairstyles only',async()=>{
@@ -240,7 +242,14 @@ test('fresh starts: an unworn anchor piece, and streaky shoes or jewelry sit one
   const history=[{itemIds:['top0','bot0','docs','hoops']},{itemIds:['top1','bot0','docs','hoops','chain']},{itemIds:['top2','bot1','loafers','hoops']},{itemIds:['top0','bot1','docs','chain']}];
   const {anchor,offered,resting}=freshStart(closet,history,()=>0);
   assert.equal(anchor.id,'top3','the anchor is clothing not seen in recent looks');
-  assert.deepEqual([...resting].sort(),['docs','hoops'],'three of the last four looks');
+  // Bottoms lead too: the anchor's category rotates.
+  const kinds=new Set(Array.from({length:20},(_,k)=>freshStart([...closet,{id:'bot9',category:'Bottoms',name:'b9',status:'available'}],history,()=>k/20).anchor?.category));
+  assert.deepEqual([...kinds].sort(),['Bottoms','Tops']);
+  // A piece of clothing in both of the last two looks sits out; one in only the last look may return.
+  const pants=[{itemIds:['top0','bot0','loafers']},{itemIds:['top1','bot0','loafers']},{itemIds:['top2','bot1']}];
+  const o=freshStart(closet,pants).offered.map(i=>i.id);
+  assert.ok(!o.includes('bot0')&&o.includes('bot1')&&o.includes('top0'),'no third time in a row');
+  assert.deepEqual([...resting].sort(),['bot0','docs','hoops'],'clothing in both of the last two looks; shoes and jewelry in three of the last four');
   assert.ok(!offered.some(i=>['docs','hoops'].includes(i.id))&&offered.some(i=>i.id==='loafers')&&offered.some(i=>i.id==='chain'));
   // The only pair of shoes is never benched.
   assert.ok(freshStart(closet.filter(i=>i.id!=='loafers'),history).offered.some(i=>i.id==='docs'));
@@ -248,6 +257,6 @@ test('fresh starts: an unworn anchor piece, and streaky shoes or jewelry sit one
   await perform('select',{items:closet,history},adapter(async(url,init)=>{sent=JSON.parse(init.body);const c=JSON.parse(sent.input[0].content[0].text);const idOf=Object.fromEntries(c.items.map(i=>[i.name,i.id]));
     assert.ok(c.anchorPieceId&&c.items.find(i=>i.id===c.anchorPieceId).name==='top 3');
     assert.ok(!('docs' in idOf)&&!('hoops' in idOf),'resting pieces are not offered');
-    return modelResult({...look,itemIds:[idOf['top 3'],idOf['bottom 0'],idOf['loafers']]})}));
+    return modelResult({...look,itemIds:[idOf['top 3'],idOf['bottom 1'],idOf['loafers']]})}));
   assert.match(sent.instructions,/Build this look around the anchor piece/);
 });

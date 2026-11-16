@@ -246,7 +246,7 @@ async function visualize(l){
  const front=refs.find(r=>r.id==='body-front'),head=refs.find(r=>r.id==='head-front');if(!front||!head)throw Error('Add a front-facing full-body photo and a headshot to visualize this look.');
  const img=async id=>referenceJPEG(await assetBlob(id));
  const skin=await ensureSkin();
- const body={skin:skinFields(skin),items:await Promise.all(checked.map(async i=>({...publicItem(i),...(i.category==='Makeup'?{}:{image:await img(i.photos[0])})}))),look:lookFields(l),appearance:await Promise.all([front,head,...['body-side','head-left'].map(id=>refs.find(r=>r.id===id)).filter(Boolean)].map(r=>img(r.photo)))};
+ const body={skin:skinFields(skin),items:await Promise.all(checked.map(async i=>({...publicItem(i),...(i.category==='Makeup'?{}:{image:await img(i.photos[0])})}))),look:lookFields(l),appearance:await Promise.all([head,front,...['head-left','body-side'].map(id=>refs.find(r=>r.id===id)).filter(Boolean)].map(r=>img(r.photo)))}; // Headshot first: likeness matters most.
  const response=await request('image',body);
  if(typeof response.image!=='string'||!response.image.startsWith('data:image/'))throw Error('The image provider returned no usable image. The outfit is still available.');
  await refresh();const latest=looks.find(i=>i.id===l.id);if(!latest)return;
@@ -443,7 +443,7 @@ function closet(tab){
  const laundry=()=>closetTab==='laundry',pool=()=>pools[closetTab]();
  for(const id of [...picked])if(!pool().some(i=>i.id===id))picked.delete(id);
  if(picked.size)picking=true;
- const filters=['All categories',...categories].map(c=>'<option>'+esc(c)+'</option>').join('')+'<option value="attention">Needs a fix</option>'+(ai.changed.length?'<option value="changed">Changed by AI</option>':'');
+ const filters=['All categories',...categories].map(c=>'<option>'+esc(c)+'</option>').join('')+'<option value="attention">Needs a fix</option><option value="resting">Archived or unavailable</option>'+(ai.changed.length?'<option value="changed">Changed by AI</option>':'');
  sheet('Closet','<div class="vstack closet"><div class="tabs" role="tablist" aria-label="Closet sections">'+tabButton('closet','Closet',closetPieces().length)+tabButton('laundry','Laundry',laundryItems().length)+'</div><div id="status-slot"></div><div class="row"><label class="field">Search<input type="search" id="item-search" placeholder="Search your closet"></label><label class="field">Category<select id="cat-filter">'+filters+'</select></label></div><div class="actions" id="closet-tools"></div><div id="catalog" class="list-grid" role="tabpanel" aria-labelledby="tab-'+closetTab+'"></div><div id="bulk-bar" class="bulk-bar" hidden></div></div>');
  let shown=[];
  const ordered=()=>shown.filter(i=>picked.has(i.id)).map(i=>i.id).concat([...picked].filter(id=>!shown.some(i=>i.id===id)));
@@ -451,7 +451,7 @@ function closet(tab){
   const el=$('#bulk-bar');el.hidden=!picking;if(!picking)return;
   const n=picked.size,allShown=shown.length&&shown.every(i=>picked.has(i.id));
   el.innerHTML='<div class="bulk-head"><strong role="status">'+(n?plural(n,'piece','pieces')+' selected':'Tap pieces to select them')+'</strong><div class="actions">'+(shown.length?'<button type="button" class="text-btn" id="pick-all">'+(allShown?'Unselect shown':'Select all shown')+'</button>':'')+(n?'<button type="button" class="text-btn" id="pick-none">Clear</button>':'')+'</div></div>'
-   +(n?'<div class="bulk-actions"><label class="field bulk-move"><span class="sr-only">Move selected pieces to category</span><select id="bulk-cat"><option value="" selected disabled>Move to category…</option>'+categories.map(c=>'<option>'+esc(c)+'</option>').join('')+'</select></label><button type="button" id="bulk-apply" disabled>Move</button>'+(laundry()?'<button type="button" id="bulk-available">Mark available</button>':'<button type="button" id="bulk-laundry">Send to laundry</button>')+(state.enabled?'<button type="button" id="bulk-describe" '+(aiBusy()?'disabled':'')+'>Describe with AI</button>':'')+'<button type="button" id="bulk-review">Edit one by one</button><button type="button" id="bulk-delete" class="danger">Delete</button></div>':'');
+   +(n?'<div class="bulk-actions"><label class="field bulk-move"><span class="sr-only">Move selected pieces to category</span><select id="bulk-cat"><option value="" selected disabled>Move to category…</option>'+categories.map(c=>'<option>'+esc(c)+'</option>').join('')+'</select></label><button type="button" id="bulk-apply" disabled>Move</button>'+(laundry()||[...picked].some(id=>items.find(i=>i.id===id)?.status!=='available')?'<button type="button" id="bulk-available">Mark available</button>':'')+(laundry()?'':'<button type="button" id="bulk-laundry">Send to laundry</button>')+(state.enabled?'<button type="button" id="bulk-describe" '+(aiBusy()?'disabled':'')+'>Describe with AI</button>':'')+'<button type="button" id="bulk-review">Edit one by one</button><button type="button" id="bulk-delete" class="danger">Delete</button></div>':'');
   on('#pick-all','click',()=>{if(allShown)shown.forEach(i=>picked.delete(i.id));else shown.forEach(i=>picked.add(i.id));draw()});
   on('#pick-none','click',()=>{picked.clear();draw()});
   on('#bulk-cat','change',e=>{$('#bulk-apply').disabled=!e.target.value});
@@ -473,7 +473,7 @@ function closet(tab){
   on('#ai-attention','click',()=>{$('#cat-filter').value='attention';draw()});
   for(const k in pools)$('#tab-'+k+' .count').textContent=pools[k]().length;
   const query=$('#item-search').value.toLowerCase().trim(),cat=$('#cat-filter').value,list=pool();
-  const match=i=>cat==='All categories'||(cat==='attention'?needsFix(i):cat==='changed'?ai.changed.includes(i.id):cat===i.category);
+  const match=i=>cat==='All categories'||(cat==='attention'?needsFix(i):cat==='resting'?i.status==='archived'||i.status==='unavailable':cat==='changed'?ai.changed.includes(i.id):cat===i.category);
   shown=list.filter(i=>match(i)&&[i.name,i.category,i.color,i.status,i.material,i.pattern].some(v=>String(v||'').toLowerCase().includes(query)));
   $('#closet-tools').innerHTML=(laundry()
    ?(list.length?'<button type="button" class="primary" id="laundry-done">Laundry done · Mark all available</button>':'')

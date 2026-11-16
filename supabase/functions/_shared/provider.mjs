@@ -68,14 +68,21 @@ export function recentClothing(items,history) {
   return new Set(items.filter(i=>clothing.has(i.category)&&worn.has(i.id)).map(i=>i.id));
 }
 // Fresh starts: each look is built around an anchor piece of clothing that hasn't appeared in the last ten looks,
-// and a shoe, bag or piece of jewelry that has been in three of the last four looks sits this one out (when there's another).
+// a piece of clothing worn in both of the last two looks sits this one out, and so does a shoe, bag or piece of jewelry
+// that has been in three of the last four looks (each only when there's another in its category).
 export function freshStart(items,history,random=Math.random) {
   const looks=(Array.isArray(history)?history:[]).map(h=>Array.isArray(h?.itemIds)?h.itemIds:[]);
   const seen=new Set(looks.slice(0,10).flat());
-  const anchors=items.filter(i=>clothing.has(i.category)&&!seen.has(i.id));
-  const anchor=anchors.length?anchors[Math.floor(random()*anchors.length)]:null;
+  // The anchor's category rotates (tops, bottoms, dresses, outerwear), so bottoms and dresses lead too.
+  const unworn=items.filter(i=>clothing.has(i.category)&&!seen.has(i.id));
+  const kinds=[...new Set(unworn.map(i=>i.category))];
+  const kind=kinds.length?kinds[Math.floor(random()*kinds.length)]:null;
+  const pool=unworn.filter(i=>i.category===kind);
+  const anchor=pool.length?pool[Math.floor(random()*pool.length)]:null;
   const count=new Map();for (const ids of looks.slice(0,4)) for (const id of new Set(ids)) count.set(id,(count.get(id)||0)+1);
-  const streak=new Set(items.filter(i=>['Shoes','Bags','Jewelry'].includes(i.category)&&(count.get(i.id)||0)>=3).map(i=>i.id));
+  // No piece of clothing three looks in a row; streaky shoes, bags and jewelry rest once.
+  const lastTwo=looks.length>=2?new Set(looks[0].filter(id=>looks[1].includes(id))):new Set();
+  const streak=new Set(items.filter(i=>(['Shoes','Bags','Jewelry'].includes(i.category)&&(count.get(i.id)||0)>=3)||(clothing.has(i.category)&&lastTwo.has(i.id))).map(i=>i.id));
   const offered=items.filter(i=>!streak.has(i.id)||!items.some(o=>o.category===i.category&&!streak.has(o.id)));
   return {anchor,offered:complete(offered)?offered:items,resting:streak};
 }
@@ -201,13 +208,17 @@ export async function perform(route, body, {env, fetchImpl, reserve}) {
     const appearance=body.appearance.slice(0, Math.min(4,16-selected.length));
     const references=[...appearance,...selected.map(item=>item.image)].map(photo);
     const model=env.OPENAI_IMAGE_MODEL||'gpt-image-2.5-sunburst';
-    const labels=selected.map((item,i)=>'Image '+(appearance.length+i+1)+': '+JSON.stringify(metadata(item)));
+    // Short labels keep the instructions focused on likeness: name, category, colors and the first part of the description.
+    const brief=item=>{const m=metadata(item);const d=String(m.description||'').split(/(?<=\.)\s+/).slice(0,2).join(' ').slice(0,320);return {name:m.name,category:m.category,...(m.colors?{colors:m.colors.map(c=>c.name).join(', ')}:{}),...(d?{description:d}:{})}};
+    const labels=selected.map((item,i)=>'Image '+(appearance.length+i+1)+': '+JSON.stringify(brief(item)));
     const skin=skinText(body.skin);
     const plan=(Array.isArray(body.look.makeupPlan)?body.look.makeupPlan:[]).slice(0,12).map(step=>({area:String(step?.area||'').slice(0,40),shade:String(step?.shade||'').slice(0,60),...(hexOk(step?.hex)?{hex:step.hex}:{}),application:String(step?.application||'').slice(0,200)}));
-    const prompt=['Produce a photorealistic full-length portrait of the same person as the first '+appearance.length+' reference photo(s), wearing every selected item. Match facial appearance, natural proportions and natural skin tone'+(skin?.hex?' (about '+skin.hex+')':'')+'; do not lighten or darken the skin. Neutral studio background, natural daylight, realistic drape, shoes in frame. Preserve garment shape, length, fit, pattern, colors, logos and construction. Do not add, substitute or invent pieces. Other images map to the following inventory items in order:',...labels,
-      plan.length?'Makeup must be clearly visible and accurate to these shades; the face is close enough to see it: '+JSON.stringify(plan)+(makeupItems.length?' (products: '+makeupItems.map(i=>i.name).join(', ')+')':''):'Makeup: '+String(body.look.makeup||'natural, minimal').slice(0,600),
-      ...(body.look.hair?.style?['Hairstyle: an essential part of this look and must be clearly visible exactly as described, not left as default loose hair unless it says loose. Render it realistically on the person\'s own hair'+(skin?.hairLength||skin?.hairColor?' ('+[skin.hairLength,skin.hairColor,skin.hairTexture].filter(Boolean).join(', ')+'; keep that length and color)':'')+': '+JSON.stringify({style:String(body.look.hair.style).slice(0,80),steps:String(body.look.hair.steps||'').slice(0,600)})]:[]),
-      'Styling directions, as reference data:',JSON.stringify({styling:body.look.styling})].join('\n');
+    const prompt=['Produce a photorealistic full-length portrait of the person in the first '+appearance.length+' reference photo(s). Likeness is the top priority: it must be unmistakably the same person, with the same face shape, eyes, eyebrows, nose, lips, jaw, skin tone and texture, body shape and proportions as in those photos. Copy the skin tone from the photos exactly; do not lighten, darken, smooth or idealize the face or body. Neutral studio background, natural daylight, realistic drape, shoes in frame.',
+      'Dress them in every selected item, preserving each garment\'s shape, length, fit, pattern, colors, logos and construction. Do not add, substitute or invent pieces. The images after the reference photos are these items, in order:',...labels,
+      ...(body.look.hair?.style?['Hairstyle, clearly visible and done with the person\'s own hair'+(skin?.hairLength||skin?.hairColor?' ('+[skin.hairLength,skin.hairColor,skin.hairTexture].filter(Boolean).join(', ')+'; keep that length and color)':'')+'; restyle only the hair, never the face: '+JSON.stringify({style:String(body.look.hair.style).slice(0,80),steps:String(body.look.hair.steps||'').slice(0,400)})]:[]),
+      plan.length?'Makeup, visible and true to these shades, applied on top of the person\'s own unchanged features: '+JSON.stringify(plan.map(({area,shade,hex})=>({area,shade,...(hex?{hex}:{})}))):'Makeup: '+String(body.look.makeup||'natural, minimal').slice(0,300),
+      'Styling directions: '+String(body.look.styling||'').slice(0,600),
+      'Before finishing, check the face against the reference photos: it must still be the same person.'].join('\n');
     const form=new FormData();
     for (const [key,value] of Object.entries({model,prompt,size:'1024x1536',quality:'medium',output_format:'jpeg',n:'1'})) form.append(key,value);
     references.forEach(({blob,extension},i)=>form.append('image[]',blob,'reference-'+i+'.'+extension));
