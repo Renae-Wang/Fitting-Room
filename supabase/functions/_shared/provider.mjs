@@ -67,6 +67,18 @@ export function recentClothing(items,history) {
   const worn=new Set((Array.isArray(history)?history:[]).slice(0,3).flatMap(h=>Array.isArray(h?.itemIds)?h.itemIds:[]));
   return new Set(items.filter(i=>clothing.has(i.category)&&worn.has(i.id)).map(i=>i.id));
 }
+// Fresh starts: each look is built around an anchor piece of clothing that hasn't appeared in the last ten looks,
+// and a shoe, bag or piece of jewelry that has been in three of the last four looks sits this one out (when there's another).
+export function freshStart(items,history,random=Math.random) {
+  const looks=(Array.isArray(history)?history:[]).map(h=>Array.isArray(h?.itemIds)?h.itemIds:[]);
+  const seen=new Set(looks.slice(0,10).flat());
+  const anchors=items.filter(i=>clothing.has(i.category)&&!seen.has(i.id));
+  const anchor=anchors.length?anchors[Math.floor(random()*anchors.length)]:null;
+  const count=new Map();for (const ids of looks.slice(0,4)) for (const id of new Set(ids)) count.set(id,(count.get(id)||0)+1);
+  const streak=new Set(items.filter(i=>['Shoes','Bags','Jewelry'].includes(i.category)&&(count.get(i.id)||0)>=3).map(i=>i.id));
+  const offered=items.filter(i=>!streak.has(i.id)||!items.some(o=>o.category===i.category&&!streak.has(o.id)));
+  return {anchor,offered:complete(offered)?offered:items,resting:streak};
+}
 // Hair variety: each look gets a hairstyle direction, chosen at random from families not used in the last four looks.
 // Bolder families come in as the creativity setting rises; leaving the hair loose is one option among many.
 export const hairFamilies=[
@@ -138,8 +150,9 @@ export async function perform(route, body, {env, fetchImpl, reserve}) {
       [{type:'input_image',image_url:body.image,detail:'low'},...(body.body!=null?[{type:'input_image',image_url:body.body,detail:'low'}]:[])]);
   }
   if (route==='select') {
-    const items=usable(body.items);
-    if (!complete(items)) invalid('Add available shoes and either a dress/one-piece or a top and bottom before generating.');
+    const all=usable(body.items);
+    if (!complete(all)) invalid('Add available shoes and either a dress/one-piece or a top and bottom before generating.');
+    const {anchor,offered:items}=freshStart(all,body.history);
     const recentIds=recentClothing(items,body.history);
     // Variety: shuffle so list order never favours the same pieces.
     const shuffled=[...items];
@@ -151,13 +164,14 @@ export async function perform(route, body, {env, fetchImpl, reserve}) {
     const hasMakeup=items.some(i=>i.category==='Makeup');
     const hair=pickHair(body.history,Number(body.creativity??8));
     const context={occasion:body.occasion,context:body.context,preferences:body.preferences,feedbackAndHistory:history,
-      creativity:body.creativity??8,appearance:skinText(body.skin),items:shuffled.map(item=>({...metadata(item,alias.get(item.id)),...(recentIds.has(item.id)?{wornInRecentLooks:true}:{})}))};
+      creativity:body.creativity??8,appearance:skinText(body.skin),...(anchor?{anchorPieceId:alias.get(anchor.id)}:{}),items:shuffled.map(item=>({...metadata(item,alias.get(item.id)),...(recentIds.has(item.id)?{wornInRecentLooks:true}:{})}))};
     const json=JSON.stringify(context);
     if (json.length>600_000) invalid('The styling context is too large. Shorten descriptions or history.');
     const instructions=persona(body.sass)+' Select ONE complete wearable look using only item IDs exactly as listed in items (p1, p2 and so on). Include shoes and a one-piece or a top and bottom. Limit to twelve items total. Never treat a full-look reference as owned clothing. Use each item\'s description, colors and shades to judge fit, proportion and color.'
       +(hasMakeup?' Makeup is part of every look: include one to three makeup items from items (at least one eye or lip product), chosen to flatter the skin in appearance and to harmonize with the outfit\'s colors. In makeupPlan give one entry per shade you use: itemId, the shade name from that item\'s shades (or a short description), its hex, the area (lids, crease, outer corner, lower lash line, waterline, inner corner, lips, cheeks, face) and how to apply it. Write makeup as clear step-by-step directions that match makeupPlan.':' There is no makeup inventory: leave makeupPlan empty and describe a simple no-product look.')
       +' Hair is part of every look and a place to experiment. The hairstyle direction for this look is '+hair.text+'. Build on that direction so it suits this outfit, unless it is impossible with the owner\'s hair, in which case choose a clearly different family and say why. In hair give the style a short name and clear steps. It must be achievable with the owner\'s own hair as described in appearance (length, color, texture; never change the color or length, never add extensions) using only hair ties, which the owner has, plus any hair accessories you choose from items (include their IDs). No heat tools, pins or products. Prefer a silhouette that reads clearly from the front in a full-length photo, and make the hair work with the neckline, collar, earrings and mood of the outfit.'
-      +' Give specific styling and brief reasoning. Push this alternative dresser with thoughtful proportion, unexpected layering, texture, color or makeup at their desired creativity level. Adapt to activity, context, mobility, weather, dress code and observed preferences. Use rating context without reading one negative rating as a general preference for safe styling. If substituting an unsuitable piece, explain the choice. Do not name new products. Favor variety: build something genuinely different from the recent looks in feedbackAndHistory and favor pieces not used lately. Clothing marked wornInRecentLooks may be used again only when it clearly pushes this look\'s style further, at most one such piece, and say why in reasoning. Shoes, bags, jewelry and makeup may repeat freely.';
+      +(anchor?' Build this look around the anchor piece anchorPieceId, which has not been worn lately: include it and choose everything else to make it shine. Only if it truly cannot work for this occasion, anchor the look on a different piece that does not appear in feedbackAndHistory, and say so in reasoning.':'')
+      +' Give specific styling and brief reasoning. Push this alternative dresser with thoughtful proportion, unexpected layering, texture, color or makeup at their desired creativity level. Adapt to activity, context, mobility, weather, dress code and observed preferences. Use rating context without reading one negative rating as a general preference for safe styling. If substituting an unsuitable piece, explain the choice. Do not name new products. Favor variety: build something genuinely different from the recent looks in feedbackAndHistory and favor pieces not used lately. Clothing marked wornInRecentLooks may be used again only when it clearly pushes this look\'s style further, at most one such piece, and say why in reasoning. Shoes, bags, jewelry and makeup may repeat, but rotate them across looks rather than defaulting to the same favorites.';
     const resolve=raw=>{
       const ids=[],unknown=[];
       for (const x of Array.isArray(raw?.itemIds)?raw.itemIds:[]) { const id=real.get(String(x).trim())||(alias.has(x)?x:null); if (!id) unknown.push(String(x)); else if (!ids.includes(id)) ids.push(id); }

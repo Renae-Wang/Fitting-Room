@@ -9,7 +9,7 @@ test('file and camera names count as unnamed; names you typed do not', () => {
     assert.equal(genericName(n), false, n);
 });
 
-test('a description fills what is missing and corrects categories', () => {
+test('AI rewrites the name, category and detailed description from the photo; nothing is locked', () => {
   const opts = {categories: ['Tops', 'Bottoms', 'Makeup']};
   const s = {name: 'cream crinkle cap-sleeve blouse', category: 'Tops', description: 'Cream crinkled cotton blouse, cap sleeves, ends at the high hip.', colors: [{name: 'cream', hex: '#f3ead8'}, {name: 'bad', hex: 'cream'}], shades: [{name: 'x', hex: '#000000', finish: '', type: '', use: ''}]};
   const a = describedRecord({id: 'a', name: 'IMG 0409', category: '', photos: ['p']}, s, opts);
@@ -17,13 +17,13 @@ test('a description fills what is missing and corrects categories', () => {
   assert.deepEqual(a.record.colors, [{name: 'cream', hex: '#F3EAD8'}, {name: 'bad', hex: ''}], 'hex codes are checked');
   assert.equal(a.record.shades, undefined, 'shades are for makeup only');
   assert.deepEqual(a.filled, ['name', 'category', 'aiDescription', 'colors']);
-  const b = describedRecord({id: 'b', name: 'doc martins', category: 'Bottoms', aiDescription: 'kept'}, s, opts);
-  assert.equal(b.record.name, 'doc martins', 'a descriptive name you typed stays');
-  assert.equal(b.record.category, 'Tops', 'a wrong category is corrected');
-  assert.equal(b.record.aiDescription, 'kept', 'an existing description is kept');
-  assert.equal(describedRecord({id: 'r', aiDescription: 'old', category: 'Tops'}, s, {...opts, refresh: true}).record.aiDescription, s.description, 'asking again refreshes it');
-  const locked = describedRecord({id: 'l', name: 'ring', nameLocked: true, category: 'Bottoms', categoryLocked: true}, s, opts);
-  assert.deepEqual(locked.filled, ['aiDescription', 'colors'], 'what you set by hand is never changed');
+  const b = describedRecord({id: 'b', name: 'doc martins', nameLocked: true, category: 'Bottoms', categoryLocked: true, aiDescription: 'old'}, s, opts);
+  assert.equal(b.record.name, s.name, 'a typed name is rewritten too');
+  assert.equal(b.record.category, 'Tops', 'and the category');
+  assert.equal(b.record.aiDescription, s.description, 'and the detailed description');
+  assert.ok(!('nameLocked' in b.record) && !('categoryLocked' in b.record), 'old locks are cleared');
+  assert.equal(describedRecord({id: 'p', name: 'ring (pinky)', category: 'Tops'}, s, opts).record.name, 'cream crinkle cap-sleeve blouse (pinky)', 'a note in brackets is kept');
+  assert.deepEqual(describedRecord({id: 's', name: s.name, category: 'Tops', aiDescription: s.description, colors: [{name: 'cream', hex: '#F3EAD8'}, {name: 'bad', hex: ''}]}, s, opts).filled, [], 'nothing changed, nothing reported');
   const m = describedRecord({id: 'm', name: 'makeup palette', category: 'Makeup'}, {...s, name: 'warm nine-pan eyeshadow palette', category: 'Makeup', shades: [{name: 'Honey', hex: '#c8913a', finish: 'shimmer', type: 'eyeshadow', use: 'lid wash'}]}, opts);
   assert.deepEqual(m.record.shades, [{name: 'Honey', hex: '#C8913A', finish: 'shimmer', type: 'eyeshadow', use: 'lid wash'}]);
 });
@@ -36,11 +36,3 @@ test('plain names you typed are flagged for a better one; descriptive ones are n
     assert.equal(vagueName(n), false, n);
 });
 
-test('a plain name is replaced, keeping your note in brackets', () => {
-  const opts = {categories: ['Jewelry']};
-  const s = {name: 'slim silver band ring', category: 'Jewelry', color: 'silver'};
-  assert.equal(describedRecord({name: 'ring (pinky)', category: 'Jewelry', color: 'gold'}, s, opts).record.name, 'slim silver band ring (pinky)');
-  assert.equal(describedRecord({name: 'belt', category: 'Jewelry'}, s, opts).record.name, 'slim silver band ring');
-  assert.equal(describedRecord({name: 'snake ring', category: 'Jewelry'}, s, opts).record.name, 'snake ring');
-  assert.equal(describedRecord({name: 'IMG 0409 (2)', category: ''}, s, opts).record.name, 'slim silver band ring', 'file-name brackets are not notes');
-});

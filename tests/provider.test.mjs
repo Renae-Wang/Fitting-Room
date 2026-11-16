@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {once} from 'node:events';
 import {get} from 'node:http';
 import {makeServer} from '../server.mjs';
-import {perform,validateLook,recentClothing,pickHair,hairFamilies} from '../supabase/functions/_shared/provider.mjs';
+import {perform,validateLook,recentClothing,pickHair,hairFamilies,freshStart} from '../supabase/functions/_shared/provider.mjs';
 
 const items=[{id:'dress',category:'Dresses / One-pieces',name:'Satin slip',status:'available'},{id:'shoes',category:'Shoes',name:'Black boots',status:'available'}];
 const look={title:'Hard gloss',itemIds:['dress','shoes'],styling:'Layer the slip over the boots.',makeup:'No product.',makeupPlan:[],reasoning:'Contrasting textures.'};
@@ -152,7 +152,7 @@ test('read-aloud makes one counted speech call, times the words, and survives a 
   await assert.rejects(perform('speak',{text:'x'},{env,fetchImpl:async()=>new Response('',{status:429}),reserve(){}}),/429/);
 });
 
-test('variety: recent clothing may return once when it pushes the style; a near-repeat is sent back; shoes repeat freely',async()=>{
+test('variety: recent clothing may return once when it pushes the style; a near-repeat is sent back; shoes may repeat',async()=>{
   const closet=[...Array.from({length:6},(_,i)=>({id:'top'+i,category:'Tops',name:'top '+i,status:'available'})),...Array.from({length:6},(_,i)=>({id:'bot'+i,category:'Bottoms',name:'bottom '+i,status:'available'})),
     {id:'docs',category:'Shoes',name:'docs',status:'available'},{id:'vans',category:'Shoes',name:'vans',status:'available'},{id:'tote',category:'Bags',name:'tote',status:'available'}];
   const history=[{itemIds:['top1','bot1','docs','tote']},{itemIds:['top2','bot2','docs']},{itemIds:['top3','bot1']},{itemIds:['top4']}];
@@ -164,7 +164,7 @@ test('variety: recent clothing may return once when it pushes the style; a near-
   assert.equal(calls,1);assert.equal(ctx.items.length,15,'nothing is hidden from the stylist');
   assert.deepEqual(ctx.items.filter(i=>i.wornInRecentLooks).map(i=>i.name).sort(),['bottom 1','bottom 2','top 1','top 2','top 3']);
   assert.deepEqual(one.itemIds,['top1','bot0','docs','tote']);
-  assert.match(sent.instructions,/at most one such piece/);assert.match(sent.instructions,/Shoes, bags, jewelry and makeup may repeat freely/);
+  assert.match(sent.instructions,/at most one such piece/);assert.match(sent.instructions,/Shoes, bags, jewelry and makeup may repeat, but rotate them/);
   // Two reused clothing pieces is too close to a recent look: one repair.
   calls=0;let second;
   const two=await perform('select',{items:closet,history},adapter(async(url,init)=>{calls++;const body=JSON.parse(init.body);const c=JSON.parse(body.input[0].content[0].text);if(calls===2)second=body;
@@ -232,4 +232,22 @@ test('hairstyles vary: a direction is picked from families not used in the last 
   const family=hairFamilies.find(f=>sent.instructions.includes('The hairstyle direction for this look is '+f.text));
   assert.ok(family&&!['loose','half-up','top-knot','braid'].includes(family.key));
   assert.equal(out.hair.family,family.key,'the family is saved with the look so the next one can avoid it');
+});
+
+test('fresh starts: an unworn anchor piece, and streaky shoes or jewelry sit one look out',async()=>{
+  const closet=[...Array.from({length:4},(_,i)=>({id:'top'+i,category:'Tops',name:'top '+i,status:'available'})),{id:'bot0',category:'Bottoms',name:'bottom 0',status:'available'},{id:'bot1',category:'Bottoms',name:'bottom 1',status:'available'},
+    {id:'docs',category:'Shoes',name:'docs',status:'available'},{id:'loafers',category:'Shoes',name:'loafers',status:'available'},{id:'hoops',category:'Jewelry',name:'hoops',status:'available'},{id:'chain',category:'Jewelry',name:'chain',status:'available'}];
+  const history=[{itemIds:['top0','bot0','docs','hoops']},{itemIds:['top1','bot0','docs','hoops','chain']},{itemIds:['top2','bot1','loafers','hoops']},{itemIds:['top0','bot1','docs','chain']}];
+  const {anchor,offered,resting}=freshStart(closet,history,()=>0);
+  assert.equal(anchor.id,'top3','the anchor is clothing not seen in recent looks');
+  assert.deepEqual([...resting].sort(),['docs','hoops'],'three of the last four looks');
+  assert.ok(!offered.some(i=>['docs','hoops'].includes(i.id))&&offered.some(i=>i.id==='loafers')&&offered.some(i=>i.id==='chain'));
+  // The only pair of shoes is never benched.
+  assert.ok(freshStart(closet.filter(i=>i.id!=='loafers'),history).offered.some(i=>i.id==='docs'));
+  let sent;
+  await perform('select',{items:closet,history},adapter(async(url,init)=>{sent=JSON.parse(init.body);const c=JSON.parse(sent.input[0].content[0].text);const idOf=Object.fromEntries(c.items.map(i=>[i.name,i.id]));
+    assert.ok(c.anchorPieceId&&c.items.find(i=>i.id===c.anchorPieceId).name==='top 3');
+    assert.ok(!('docs' in idOf)&&!('hoops' in idOf),'resting pieces are not offered');
+    return modelResult({...look,itemIds:[idOf['top 3'],idOf['bottom 0'],idOf['loafers']]})}));
+  assert.match(sent.instructions,/Build this look around the anchor piece/);
 });

@@ -420,7 +420,7 @@ function askDescribe(ids){
  const left=state.remaining?.tag,short=typeof left==='number'&&left<ids.length;
  if(ids.length<=10&&!short)return describe(ids,{manual:true});
  askConfirm({title:'Describe '+plural(ids.length,'piece','pieces')+' with AI?',tone:'go',
-  body:'Each piece’s photo goes to OpenAI, one request per piece'+(typeof left==='number'?' ('+left+' left today'+(short?', so it stops after '+left+'; raise DAILY_TAG_LIMIT to do them all':'')+')':'')+'. AI corrects categories, renames plain names like “ring” and fills empty details. Names and categories you set by hand stay, and you can undo afterwards.',
+  body:'Each piece’s photo goes to OpenAI, one request per piece'+(typeof left==='number'?' ('+left+' left today'+(short?', so it stops after '+left+'; raise DAILY_TAG_LIMIT to do them all':'')+')':'')+'. AI rewrites each piece’s name, category and detailed description from its photo, replacing what’s there. You can undo afterwards.',
   keep:'Not now',act:'Describe '+plural(ids.length,'piece','pieces')},()=>describe(ids,{manual:true}));
 }
 // One status line for uploading and sorting, shown at the top of the Closet.
@@ -429,7 +429,7 @@ function statusBanner(){
  if(p.busy||aiBusy()){
   const up=p.busy?'Adding photos · '+p.finished+' of '+p.total:'Sorting with AI · '+ai.done+' of '+ai.total;
   const max=p.busy?p.total:ai.total,val=p.busy?p.finished:ai.done;
-  return '<div class="intake-banner" role="status"><div><strong>'+up+'</strong><span class="hint">'+(ai.stop?'Stopping after the pieces in progress…':ai.manual&&!p.busy?'Fixing categories and plain names. Anything you set by hand stays.':'AI names each piece and puts it in the right category. Keep browsing, or close this.')+'</span></div><progress max="'+max+'" value="'+val+'" aria-label="Progress"></progress>'+(aiBusy()&&!ai.stop?'<button type="button" class="text-btn" id="ai-stop">Stop</button>':'')+'</div>';
+  return '<div class="intake-banner" role="status"><div><strong>'+up+'</strong><span class="hint">'+(ai.stop?'Stopping after the pieces in progress…':ai.manual&&!p.busy?'Rewriting names, categories and descriptions from each photo.':'AI names each piece and puts it in the right category. Keep browsing, or close this.')+'</span></div><progress max="'+max+'" value="'+val+'" aria-label="Progress"></progress>'+(aiBusy()&&!ai.stop?'<button type="button" class="text-btn" id="ai-stop">Stop</button>':'')+'</div>';
  }
  if(p.failed)return '<div class="intake-banner failed" role="alert"><div><strong>'+plural(p.failed,'piece','pieces')+' couldn’t be added</strong><span class="hint">'+esc(intake.state.failed[0].message)+'</span></div><button type="button" class="intake-retry">Retry</button></div>';
  if(ai.total&&!ai.seen){
@@ -455,7 +455,7 @@ function closet(tab){
   on('#pick-all','click',()=>{if(allShown)shown.forEach(i=>picked.delete(i.id));else shown.forEach(i=>picked.add(i.id));draw()});
   on('#pick-none','click',()=>{picked.clear();draw()});
   on('#bulk-cat','change',e=>{$('#bulk-apply').disabled=!e.target.value});
-  on('#bulk-apply','click',async()=>{const cat=$('#bulk-cat').value;if(!cat)return;const ids=[...picked];await batch(ids.map(id=>({store:'items',record:{...items.find(i=>i.id===id),category:cat,categoryLocked:true,intake:undefined}})));await refresh();draw();render();notify('Moved '+plural(ids.length,'piece','pieces')+' to '+cat+'.')});
+  on('#bulk-apply','click',async()=>{const cat=$('#bulk-cat').value;if(!cat)return;const ids=[...picked];await batch(ids.map(id=>({store:'items',record:{...items.find(i=>i.id===id),category:cat,intake:undefined}})));await refresh();draw();render();notify('Moved '+plural(ids.length,'piece','pieces')+' to '+cat+'.')});
   on('#bulk-available','click',async()=>{const ids=[...picked],n=await setStatus(ids,'available');for(const id of ids)picked.delete(id);draw();render();notify(plural(n,'piece is','pieces are')+' available again.')});
   on('#bulk-laundry','click',async()=>{const ids=[...picked],n=await setStatus(ids,'laundry');for(const id of ids)picked.delete(id);draw();render();notify(plural(n,'piece','pieces')+' moved to Laundry.')});
   on('#bulk-describe','click',()=>askDescribe(ordered()));
@@ -506,10 +506,10 @@ function uploadStart(){
   const pieces=planPieces(files,$('#batch-mode').value,uid);intake.add(pieces);ai.seen=false;closetTab='closet';closet('closet');updatePill();
  });
 }
-const fields=['name','category','status'];
+const fields=['name','category','aiDescription','status'];
 const aiKeys=['aiDescription','colors','shades'];
 // Edits one piece, or several one after another when you select them. Each piece is saved when you move on.
-// You see the photo, name and category; the AI-written description behind them is kept for the stylist.
+// You see the photo, name, category and the detailed description the AI stylist reads; any of them can be edited.
 function edit(ids,{index=0}={}){
  ids=ids.filter(id=>items.some(i=>i.id===id));if(!ids.length)return;
  let edits={},fromAI={};
@@ -523,10 +523,8 @@ function edit(ids,{index=0}={}){
   const v=values(),name=v.name.trim();
   if(!name)throw Error('Give this piece a name.');
   if(!changed(it,v))return;
-  // What you set by hand wins over AI from now on.
-  // Compared with what AI suggested, if you asked it; otherwise with what was saved.
-  const byHand=(k,val)=>val!==String((k in fromAI?fromAI[k]:it[k])??'');
-  await put('items',{...it,...fromAI,...v,name,intake:undefined,...(byHand('category',v.category)?{categoryLocked:true}:{}),...(byHand('name',name)?{nameLocked:true}:{})});await refresh();
+  const {nameLocked,categoryLocked,...rest}=it;
+  await put('items',{...rest,...fromAI,...v,name,aiDescription:v.aiDescription.trim(),intake:undefined});await refresh();
  }
  function draw(){
   const id=ids[index],it=items.find(x=>x.id===id);
@@ -535,8 +533,8 @@ function edit(ids,{index=0}={}){
   const nav=(index>0?'<button type="button" id="prev-piece">Previous</button>':'');
   const catOptions=(d.category?'':'<option value="" selected disabled>Choose a category</option>')+options(categories,d.category);
   sheet(title(),'<form id="edit-form" class="vstack" novalidate><div class="photo-strip">'+d.photos.map((pid,n)=>'<div><img alt="Piece angle '+(n+1)+'" src="'+esc(assets.has(pid)?source(pid):'')+'">'+(d.photos.length>1?'<button type="button" class="text-btn" data-remove-angle="'+pid+'">Remove</button>':'')+'</div>').join('')+'</div>'
-   +(it.intake?'<p class="hint" role="status">AI is still sorting this piece. Anything you change here stays.</p>':'')
-   +'<label class="field">Name<input name="name" maxlength="120" required value="'+esc(d.name)+'"></label><label class="field">Category<select name="category">'+catOptions+'</select></label>'
+   +(it.intake?'<p class="hint" role="status">AI is still describing this piece, so its name and description may update in a moment.</p>':'')
+   +'<label class="field">Name<input name="name" maxlength="120" required value="'+esc(d.name)+'"></label><label class="field">Category<select name="category">'+catOptions+'</select></label><label class="field">AI description<span class="hint field-hint">Hidden elsewhere. What the stylist and image model read to tell this piece apart.</span><textarea name="aiDescription" rows="5" maxlength="1200" placeholder="AI writes this from the photo.">'+esc(d.aiDescription||'')+'</textarea></label>'
    +(Object.keys(fromAI).length?'<p class="hint" role="status">Updated by AI. Save to keep it.</p>':'')
    +'<details class="settings"><summary>More</summary><div class="vstack"><label class="field">Status<select name="status">'+options(['available','laundry','unavailable','archived'],d.status)+'</select></label><label class="field">Add photos of other angles<input type="file" id="more-angles" multiple accept="'+accepts+'"></label>'+(state.enabled?'<div class="actions"><button type="button" id="tag-photo">Ask AI to describe it again</button></div><div id="tag-results" aria-live="polite"></div>':'')+'</div></details>'
    +'<p id="inline-error" role="alert" class="error"></p><div class="form-foot">'+nav+'<button class="primary">'+(ids.length===1?'Save':last?'Save &amp; finish':'Save &amp; next')+'</button><button type="button" id="back-closet">Cancel</button><button type="button" id="delete-item" class="danger">Delete piece</button></div></form>');
@@ -551,12 +549,12 @@ function edit(ids,{index=0}={}){
    keep();const label=genericName(edits.name??it.name)||vagueName(edits.name??it.name)?'':(edits.name??it.name);
    const {suggestions}=await request('tag',{image:await referenceJPEG(await assetBlob(it.photos[0])),...(label?{label}:{})});if(seq!==dialogSeq)return;if(!Array.isArray(suggestions)||!suggestions.length)throw Error('AI couldn’t make out a piece in this photo.');
    // Asking again refreshes the hidden description and fixes the name and category, as if you had chosen them.
-   const apply=sug=>{const {record}=describedRecord({...it,name:edits.name??it.name,category:edits.category??it.category,nameLocked:false,categoryLocked:false},sug,{categories,refresh:true});fromAI=Object.fromEntries(['name','category',...aiKeys].filter(k=>record[k]!==undefined).map(k=>[k,record[k]]));fromAI.name=sug.name||fromAI.name;edits={...edits,name:fromAI.name,category:fromAI.category??edits.category}};
+   const apply=sug=>{const {record}=describedRecord({...it,name:edits.name??it.name,category:edits.category??it.category},sug,{categories});fromAI=Object.fromEntries(['name','category',...aiKeys].filter(k=>record[k]!==undefined).map(k=>[k,record[k]]));edits={...edits,name:fromAI.name,category:fromAI.category??edits.category,aiDescription:fromAI.aiDescription??edits.aiDescription}};
    apply(suggestions[0]);draw();
    if(suggestions.length>1){const target=$('#tag-results');target.innerHTML='<p class="hint">This photo shows '+suggestions.length+' pieces. Using “'+esc(suggestions[0].name)+'”.</p><div class="actions">'+suggestions.slice(1).map((sg,i)=>'<button type="button" data-sug="'+(i+1)+'">Use “'+esc(sg.name)+'” instead</button>').join('')+'<button type="button" id="split">Add the others as separate pieces</button></div>';
     target.closest('details').open=true;
     target.querySelectorAll('[data-sug]').forEach(b=>b.onclick=()=>{apply(suggestions[Number(b.dataset.sug)]);draw()});
-    on('#split','click',async()=>{const extra=suggestions.slice(1).map((sg,n)=>{const {record}=describedRecord({...it,id:uid(),name:'',category:'',aiDescription:'',colors:[],shades:[],intake:undefined,nameLocked:false,categoryLocked:false,created:(it.created||Date.now())+(n+1)/100},sg,{categories});return record});await batch(extra.map(record=>({store:'items',record})));await refresh();notify('Added '+plural(extra.length,'more piece','more pieces')+' from this photo.');$('#tag-results').innerHTML=''})}
+    on('#split','click',async()=>{const extra=suggestions.slice(1).map((sg,n)=>{const {record}=describedRecord({...it,id:uid(),name:'',category:'',aiDescription:'',colors:[],shades:[],intake:undefined,created:(it.created||Date.now())+(n+1)/100},sg,{categories});return record});await batch(extra.map(record=>({store:'items',record})));await refresh();notify('Added '+plural(extra.length,'more piece','more pieces')+' from this photo.');$('#tag-results').innerHTML=''})}
   }finally{if(btn.isConnected){btn.disabled=false;btn.textContent='Ask AI to describe it again'}}});
   on('#edit-form','submit',async e=>{e.preventDefault();await save(it);guard=null;if(last)finish();else show(index+1)});
  }

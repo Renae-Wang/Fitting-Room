@@ -426,3 +426,4 @@ html,body{overflow-x:clip;max-width:100%}
 .sheet-nav,.lb-look-nav{position:sticky;top:calc(var(--sheet-head,64px) - 1px);z-index:3;background:var(--blush);padding:8px 0;display:grid;gap:6px}
 .lb-look-nav{display:flex}
 .area-sheet:focus{outline:none}
+.field-hint{font-size:12px;letter-spacing:0;text-transform:none;font-weight:400}
